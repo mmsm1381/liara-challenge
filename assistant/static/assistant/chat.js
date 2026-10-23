@@ -128,7 +128,8 @@
     if (mode === 'password') {
       input.setAttribute('autocapitalize', 'off');
       input.setAttribute('spellcheck', 'false');
-      input.setAttribute('dir', 'ltr');
+      // Persian placeholder stays right-to-left; the typed key/value flips to LTR.
+      input.setAttribute('dir', input.value ? 'ltr' : 'rtl');
     } else {
       input.removeAttribute('autocapitalize');
       input.removeAttribute('spellcheck');
@@ -250,7 +251,11 @@
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
   });
-  input.addEventListener('input', function () { if (mode === 'password' && input.value) showError(''); });
+  input.addEventListener('input', function () {
+    if (mode !== 'password') return;
+    input.setAttribute('dir', input.value ? 'ltr' : 'rtl');
+    if (input.value) showError('');
+  });
 
   // Delegated clicks: pills and approval buttons.
   thread.addEventListener('click', function (e) {

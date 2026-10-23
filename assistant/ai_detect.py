@@ -74,6 +74,7 @@ Reply with ONE JSON object and nothing else:
  "port": integer the app listens on, or null,
  "services": [{"kind": one of %(services)s, "evidence": "exact text copied from the files that shows it is needed", "reason_fa": "one short Persian sentence"}],
  "env_vars": ["ENV_VAR_NAMES the code reads"],
+ "env_info": {"ENV_VAR_NAME": "a few Persian words saying what it is, e.g. «کلید API سرویس پرداخت Stripe»"},
  "blocker_fa": "if the project cannot run on that platform as uploaded (e.g. a Node.js package.json without a start script), one short Persian sentence saying what to fix; otherwise null",
  "summary_fa": "one short Persian sentence describing the project"}
 
@@ -124,6 +125,49 @@ def build_context(zip_path) -> tuple[str, str]:
     return context, context
 
 
+CODE_EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".php", ".go", ".rb", ".cs")
+MAX_SCAN_FILES = 600
+# Reads with an explicit fallback value; group 1 is the name.
+_READ_WITH_DEFAULT = [
+    r"""\b\w*(?:env|Env|ENV|config)\w*(?:\.\w+)?\(\s*["']([A-Z][A-Z0-9_]{1,63})["']\s*,""",  # getenv("X", d), env_bool("X", d), env.int("X", d), config("X", default=d)
+    r"""environ\.get\(\s*["']([A-Z][A-Z0-9_]{1,63})["']\s*,""",
+    r"process\.env\.([A-Z][A-Z0-9_]{1,63})\s*(?:\|\||\?\?)",
+    r"""process\.env\[["']([A-Z][A-Z0-9_]{1,63})["']\]\s*(?:\|\||\?\?)""",
+]
+# Any read; group 1 is the name.
+_READ_ANY = [
+    r"""environ\[\s*["']([A-Z][A-Z0-9_]{1,63})["']\s*\]""",
+    r"""environ\.get\(\s*["']([A-Z][A-Z0-9_]{1,63})["']""",
+    r"""\b\w*(?:env|Env|ENV|config)\w*(?:\.\w+)?\(\s*["']([A-Z][A-Z0-9_]{1,63})["']""",
+    r"process\.env\.([A-Z][A-Z0-9_]{1,63})",
+    r"""process\.env\[["']([A-Z][A-Z0-9_]{1,63})["']\]""",
+]
+
+
+SCAN_SKIP = SKIP_PARTS | {"tests", "test", "__tests__", "spec", "specs", "examples", "example", "docs",
+                          "migrations", "fixtures"}
+
+
+def scan_env(zip_path, root="") -> dict:
+    """Deterministic scan of the project's code files: {NAME: True if every read has a default}.
+
+    Only files under `root`, skipping tests, examples, docs and dependencies. Runs only
+    on an archive inspect_zip() accepted; nothing here goes to the model."""
+    reads: dict[str, bool] = {}
+    with zipfile.ZipFile(zip_path) as zf:
+        names = [i for i in zf.infolist() if not i.is_dir() and i.filename.endswith(CODE_EXTENSIONS)
+                 and i.filename.startswith(root) and i.file_size <= 256 * 1024
+                 and not (set(PurePosixPath(i.filename[len(root):]).parts) & SCAN_SKIP)]
+        for info in names[:MAX_SCAN_FILES]:
+            text = zf.read(info).decode("utf-8", errors="replace")
+            with_default = {m for p in _READ_WITH_DEFAULT for m in re.findall(p, text)}
+            for name in {m for p in _READ_ANY for m in re.findall(p, text)}:
+                optional_here = name in with_default
+                reads[name] = reads.get(name, True) and optional_here
+    reads.pop("PORT", None)
+    return reads
+
+
 def has_default(name, haystack):
     """True when the code visibly reads `name` with a fallback value, so it may be left unset."""
     n = re.escape(name)
@@ -162,7 +206,8 @@ def declared_platform(zip_path):
     return None
 
 
-def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
+def validate(raw: dict, haystack: str, declared: str | None = None, scan=None) -> dict:
+    """scan: optional callable(root) -> {NAME: has_default}, run once the root is known."""
     """Turn the model's JSON into a project dict, or raise DetectionFailed."""
     if not isinstance(raw, dict):
         if not declared:
@@ -208,13 +253,27 @@ def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
         reason = _clean_text(svc.get("reason_fa"), 200) or f"در فایل‌ها «{evidence[:60]}» پیدا شد."
         services.append({"kind": kind, "reason_fa": reason, "evidence": f"ai:{evidence[:80]}"})
 
-    env_vars = sorted({
+    model_names = {
         name for name in (raw.get("env_vars") or [])
         if isinstance(name, str) and ENV_NAME.fullmatch(name) and re.search(rf"\b{re.escape(name)}\b", haystack)
         and name != "PORT"
-    })[:40]
+    }
+    env_scan = scan(root) if scan else None
+    if env_scan is None:
+        env_vars = sorted(model_names)[:40]
+        optional = sorted(n for n in env_vars if has_default(n, haystack))
+    else:
+        # The code scan is the source of truth: required only when some read has no default.
+        # Names the model found that no code reads (e.g. only in .env.example) are optional.
+        env_vars = sorted(model_names | set(env_scan))[:60]
+        optional = sorted(n for n in env_vars if env_scan.get(n, True) or has_default(n, haystack))
 
-    optional = sorted(n for n in env_vars if has_default(n, haystack))
+    env_info = {}
+    raw_info = raw.get("env_info") if isinstance(raw.get("env_info"), dict) else {}
+    for name in env_vars:
+        desc = _clean_text(raw_info.get(name), 120)
+        if desc:
+            env_info[name] = desc
     summary = _clean_text(raw.get("summary_fa"), 300)
     if confidence == "medium":
         warnings.append("این تشخیص قطعی نیست؛ قبل از ادامه بررسی‌اش کن.")
@@ -229,6 +288,7 @@ def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
         "services": services,
         "env_vars": env_vars,
         "optional_env": optional,
+        "env_info": env_info,
         "warnings_fa": warnings,
         "detected_by": "ai",
         "confidence": confidence,
@@ -252,4 +312,4 @@ def detect(zip_path) -> dict:
         raw = json.loads(match.group(0)) if match else None
     except ValueError:
         raw = None
-    return validate(raw, haystack, declared_platform(zip_path))
+    return validate(raw, haystack, declared_platform(zip_path), lambda root: scan_env(zip_path, root))

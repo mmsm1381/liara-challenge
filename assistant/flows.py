@@ -277,6 +277,48 @@ SECRET_NOTE = chat.note("مقدار رمزنگاری‌شده فقط تا اجر
                         "نمی‌شود و برای هوش مصنوعی فرستاده نمی‌شود.", "info")
 
 
+ENV_HINTS = [  # fallback descriptions when the model gave none; first match wins
+    (r"^(DATABASE_URL|DB_|MONGO|POSTGRES|MYSQL)", "اطلاعات اتصال به دیتابیس"),
+    (r"^REDIS", "آدرس Redis"),
+    (r"(SECRET_KEY|APP_KEY|_SECRET$|JWT)", "کلید محرمانه‌ی خود برنامه"),
+    (r"ALLOWED_HOSTS|CSRF|CORS", "دامنه‌های مجاز برنامه"),
+    (r"(_URL|_URI|_HOST|_ENDPOINT|_BASE)$", "آدرس یک سرویس"),
+    (r"(API_KEY|_TOKEN|_KEY|ACCESS|PASSWORD|DSN)", "کلید یا رمز یک سرویس دیگر"),
+    (r"(DEBUG|_ENABLED|_MODE|_FAKE|_SYNC)$", "یک تنظیم روشن/خاموش"),
+    (r"(TIMEOUT|_CAP|_LIMIT|_SIZE|_BYTES|_MAX|_MIN|PORT)$", "یک عدد تنظیمی"),
+]
+
+
+def env_description(project, name):
+    desc = (project.get("env_info") or {}).get(name)
+    if desc:
+        return desc
+    for pattern, text in ENV_HINTS:
+        if re.search(pattern, name):
+            return text
+    return "یک تنظیم برنامه"
+
+
+def _env_overview(conv):
+    """One line per variable: what it is and who provides it."""
+    project, pkg = conv.state["project"], conv.state["package"]
+    auto = jobs.auto_env_names(project["platform"], pkg["db_kind"], pkg["bucket"])
+    optional = set(project.get("optional_env") or [])
+    needed = set(_needed_env(conv))
+    rank = {"needed": 0, "auto": 1, "optional": 2}
+    rows = []
+    for name in project.get("env_vars") or []:
+        if name == "PORT":
+            continue
+        kind = "needed" if name in needed else "auto" if name in auto else "optional"
+        status = {"needed": "لازم — از تو می‌پرسم", "auto": "خودم تنظیمش می‌کنم",
+                  "optional": "اختیاری — کد مقدار پیش‌فرض دارد"}[kind]
+        rows.append((rank[kind], name, {"title": name, "subtitle": f"{env_description(project, name)} · {status}",
+                                        "ltr_title": True}))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return {"type": "card", "title": "متغیرهای محیطی برنامه", "items": [r[2] for r in rows]}
+
+
 def _needed_env(conv):
     """Env var names only the user can provide: not filled by the job, no default in the code."""
     project, pkg = conv.state["project"], conv.state["package"]
@@ -291,8 +333,9 @@ def _start_secrets(user, conv):
     if not needed:
         return _approval(user, conv)
     chat.set_state(conv, step="secrets", secrets_queue=needed, secrets_total=len(needed), secrets_later=[])
-    intro = chat.bot(conv, "این برنامه به چند مقدار نیاز دارد که خودم نمی‌توانم بسازم (مثلاً کلید سرویس‌های دیگر): "
-                           + "، ".join(needed))
+    count = f"{len(needed)}".translate(FA_NUM)
+    intro = chat.bot(conv, f"این‌ها متغیرهایی است که برنامه می‌خواند. {count} مورد را خودم نمی‌توانم بسازم و از تو می‌پرسم:",
+                     _env_overview(conv))
     return [intro] + _ask_next_secret(user, conv)
 
 
@@ -305,7 +348,9 @@ def _ask_next_secret(user, conv):
     total = conv.state.get("secrets_total") or len(queue)
     index = total - len(queue) + 1
     chat.set_state(conv, awaiting_secret={"name": name, "purpose": "deploy"})
-    return [chat.bot(conv, f"({index} از {total})".translate(FA_NUM) + f" مقدار «{name}» را در کادر پایین وارد کن.",
+    desc = env_description(conv.state.get("project") or {}, name)
+    return [chat.bot(conv, f"({index} از {total})".translate(FA_NUM) + f" مقدار «{name}» را در کادر پایین وارد کن.\n"
+                           f"این چیست: {desc}",
                      SECRET_NOTE,
                      chat.buttons(("بعداً در کنسول تنظیم می‌کنم", "secret_later"), ("اختیاری است، رد شو", "secret_skip"),
                                   ("لغو دیپلوی", "cancel_deploy")))]
