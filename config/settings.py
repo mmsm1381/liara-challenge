@@ -105,6 +105,9 @@ LIARA_TIMEOUT = float(os.environ.get("LIARA_TIMEOUT", 20))
 # Used to tell the fake client apart in tests and demos without an account.
 LIARA_FAKE = env_bool("LIARA_FAKE", False)
 
+# Optional read-only GitHub token for downloading public repos (anonymous limit: 60/hour/IP).
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
 # Liara AI (OpenAI-compatible). Swappable through these three vars.
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")

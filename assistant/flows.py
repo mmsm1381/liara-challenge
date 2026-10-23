@@ -14,8 +14,8 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
-from . import ai_detect, approvals, chat, orchestrator, sizing
-from .inspection import InspectionError, inspect_zip
+from . import ai_detect, approvals, chat, github, orchestrator, sizing
+from .inspection import InspectionError, InspectionLimits, inspect_zip
 from .liara_client import LiaraError, client_for_token, make_client
 from .memory import age_fa, import_projects
 from .models import LiaraConnection, Site
@@ -167,14 +167,50 @@ def handle_upload(user, conv, upload):
     with path.open("wb") as fh:
         for chunk in upload.chunks():
             fh.write(chunk)
-    try:
-        from .inspection import InspectionLimits
+    return _process_source(user, conv, path, upload_id, Path(upload.name).stem)
 
-        report = inspect_zip(path, InspectionLimits(archive_bytes=settings.MAX_ZIP_BYTES))
+
+def _safety_check(conv, path):
+    """inspect_zip() or an error message list."""
+    try:
+        return inspect_zip(path, InspectionLimits(archive_bytes=settings.MAX_ZIP_BYTES)), None
     except InspectionError as exc:
         path.unlink(missing_ok=True)
-        return [chat.bot(conv, "", chat.error(f"این فایل را نمی‌توانم بپذیرم: {_inspection_fa(exc.code)}",
-                                              "یک zip سالم از پوشه‌ی پروژه بساز و دوباره بفرست."))]
+        return None, [chat.bot(conv, "", chat.error(f"این فایل را نمی‌توانم بپذیرم: {_inspection_fa(exc.code)}",
+                                                    "یک zip سالم از پوشه‌ی پروژه بساز و دوباره بفرست."))]
+
+
+def handle_github(user, conv, text):
+    """A public GitHub link: download the archive, then the same path as a ZIP upload."""
+    parsed = github.parse_url(text)
+    if not parsed:
+        return [chat.bot(conv, "", chat.error("این لینک مخزن گیت‌هاب نیست.",
+                                              "لینک را این‌طور بفرست: https://github.com/owner/repo"))]
+    owner, repo, ref = parsed
+    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_id = uuid.uuid4().hex
+    raw = settings.UPLOAD_DIR / f"{upload_id}.raw.zip"
+    path = settings.UPLOAD_DIR / f"{upload_id}.zip"
+    try:
+        github.download(owner, repo, ref, raw, settings.MAX_ZIP_BYTES)
+        # Safety checks on GitHub's archive before we read it to remove its top folder.
+        report, err = _safety_check(conv, raw)
+        if err:
+            return err
+        if not github.strip_top_folder(raw, path):
+            raw.replace(path)
+    except github.GitHubError as exc:
+        return [chat.bot(conv, "", chat.error(exc.message_fa, exc.next_fa))]
+    finally:
+        raw.unlink(missing_ok=True)
+    return _process_source(user, conv, path, upload_id, repo)
+
+
+def _process_source(user, conv, path, upload_id, source_name):
+    """Safety checks, AI detection and the confirm question, for any ZIP on disk."""
+    report, err = _safety_check(conv, path)
+    if err:
+        return err
     # What kind of project this is is decided by the model, then validated and confirmed by the user.
     if not orchestrator._within_daily_cap(user):
         path.unlink(missing_ok=True)
@@ -199,7 +235,7 @@ def handle_upload(user, conv, upload):
     for warning in project.get("warnings_fa") or []:
         blocks.append(chat.note(warning, "warning"))
     chat.set_state(conv, flow="deploy", step="confirm_detect", upload_id=upload_id,
-                   project=project, source_name=Path(upload.name).stem)
+                   project=project, source_name=source_name)
     summary = project.get("summary_fa") or ""
     return [chat.bot(conv, "پروژه را بررسی کردم. " + summary, *blocks),
             chat.bot(conv, "این تشخیص درست است؟", CONFIRM_DETECT_BUTTONS)]
@@ -265,7 +301,9 @@ def deploy_step(user, conv, text, value):
     step = conv.state.get("step")
     if step == "source":
         if value == "github":
-            return [chat.bot(conv, "اتصال گیت‌هاب در این نسخه هنوز آماده نیست. پوشه‌ی پروژه را zip کن و با دکمه‌ی سنجاق بفرست.")]
+            chat.set_state(conv, step="github_url")
+            return [chat.bot(conv, "لینک مخزن عمومی گیت‌هاب را بفرست؛ مثلاً https://github.com/owner/repo "
+                                   "(برای یک شاخه‌ی خاص: .../tree/branch-name).")]
         return [chat.bot(conv, "فایل zip پروژه را با دکمه‌ی سنجاق کنار پیام بفرست.")]
     if step == "confirm_detect":
         if value == "detect_ok":
@@ -323,6 +361,9 @@ def handle_text(user, conv, text, value=None):
         return [chat.bot(conv, "کلید API لیارا را در کادر پایین بچسبان.",
                          chat.note("کلید رمزنگاری‌شده ذخیره می‌شود و هیچ‌وقت برای مدل هوش مصنوعی فرستاده نمی‌شود.", "info"))]
 
+    # A GitHub link starts the GitHub path whether or not the button was pressed first.
+    if not value and (github.parse_url(text) or (state.get("flow") == "deploy" and state.get("step") == "github_url")):
+        return handle_github(user, conv, text)
     if value == "retry_recommend" or (state.get("flow") == "deploy" and value):
         out = deploy_step(user, conv, text, value)
         if out is not None:

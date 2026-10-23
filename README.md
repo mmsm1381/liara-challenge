@@ -141,7 +141,7 @@ Read calls are different: while a build is running, the worker keeps polling `ge
 - **Object storage env vars are guesses.** `LIARA_ENDPOINT` is hard-coded and marked UNVERIFIED in `jobs.py`. The bucket-key response is also unverified; if Liara does not return the secret, the job stops and asks the user to create the key in the console.
 - **Shipping a new version of an existing site is not supported in place.** The "نسخه‌ی جدید بفرستم" button starts the deploy flow again, which creates a new app with a random suffix.
 - **Port mismatch is advice only.** The `port_mismatch` signal tells the user which port to set and to send a new version; it does not redeploy by itself.
-- **GitHub sources are not supported.** The assistant accepts ZIP uploads only (50 MiB by default, `MAX_ZIP_BYTES`; 200 MB after packing). Project detection is AI-only (see Phase 2), so every upload needs an LLM configured.
+- **GitHub: public repositories only.** A pasted `https://github.com/owner/repo` (or `.../tree/branch`) link is downloaded as GitHub's ZIP archive. Private repos and auto-deploy on push are not supported; for a private repo, upload a ZIP. Without `GITHUB_TOKEN`, GitHub allows about 60 anonymous downloads per hour per server IP. Uploads and downloads are limited to 50 MiB (`MAX_ZIP_BYTES`), and to 200 MB after packing. Project detection is AI-only (see Phase 2), so every upload needs an LLM configured.
 - **Custom domains: guidance only.** The "دامنه‌ی خودم را وصل کن" button shows steps and links to the console. It does not add domains or DNS records.
 - **Redis is not created automatically.** Provision it on Liara and set `REDIS_URL`. A worker process is also needed unless `RQ_SYNC=1` (demo only).
 - **No deletes.** The assistant never deletes apps, databases or buckets. Cleanup is a message asking the user to delete them in the console.
@@ -157,7 +157,13 @@ Chat is the only interface. The page shows the conversation with buttons, cards 
 **Phase 1: connect the account.** The assistant greets the user and offers "کلید API دارم" or "نمی‌دونم چطور بگیرم". The key is pasted into a password-mode box. It is checked with a list-projects call, and only then stored encrypted. The assistant lists the apps it found. If the key is a JWT, its expiry is saved, and the returning-user greeting warns when fewer than three days remain. Screenshot: `docs/screens/1-connect.png`.
 
 **Phase 2: deploy.** Flow:
-1. The user attaches a ZIP. Inspection is static only: nothing is extracted to disk or run. The card shows the detected platform, start command, port and services (PostgreSQL, MySQL, MongoDB, Redis, file storage), with the reason for each.
+1. The user attaches a ZIP, or picks «لینک گیت‌هاب می‌دهم» ("I'll give a GitHub link") and pastes a public repo link; a GitHub link pasted at any point also works. For a link, the server:
+   - accepts only `github.com` URLs;
+   - asks GitHub's API for the repo archive and follows exactly one redirect, only to `codeload.github.com`;
+   - stops the download at the size limit;
+   - removes GitHub's top-level folder after the archive passes the safety checks.
+
+   From there the source takes the same path as an upload. Inspection is static only: nothing is extracted to disk or run. The card shows the detected platform, start command, port and services (PostgreSQL, MySQL, MongoDB, Redis, file storage), with the reason for each.
    - **AI-only detection.** Every upload is classified by `ai_detect.py`. The model gets a small, redacted slice of the ZIP: the file tree, manifests such as `requirements.txt`, `composer.json` and `go.mod`, the first lines of entry points, and env var names only from `.env.example` (never `.env`). It answers with one JSON object, and the server validates every field:
      - the platform must be one of Liara's 14 platforms (the CLI's `AVAILABLE_PLATFORMS`);
      - Liara's fixed ports are enforced (for example 80 for Django, Flask and Laravel);
@@ -263,6 +269,7 @@ assistant/
   llm.py                 Liara AI transport (native tools or prompt_json)
   inspection.py          ZIP safety checks
   ai_detect.py           AI project detection with strict validation
+  github.py              public GitHub repo -> ZIP (allowlisted hosts, size-limited)
   sizing.py              turns the answers and plan list into a package and price
   diagnostics.py         deterministic signal rules
   tools.py               tool registry: read tools run, change tools propose

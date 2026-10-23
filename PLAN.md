@@ -33,6 +33,7 @@ assistant/
   llm.py                Liara AI chat-completions transport (native tools + prompt_json)
   inspection.py         ZIP safety checks (no project detection)
   ai_detect.py          AI project detection with strict validation
+  github.py             public GitHub repo link -> ZIP, same path as an upload
   sizing.py             plan tiers -> real plan IDs, price text
   diagnostics.py        deterministic log/metric signal rules
   tools.py              tool registry; read tools run, change tools -> PendingAction
