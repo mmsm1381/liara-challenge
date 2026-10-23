@@ -17,7 +17,8 @@ _PATTERNS = [
         r"\1\2[REDACTED]",
     ),
     # Long opaque hex/base64 strings that look like keys
-    (re.compile(r"\b[A-Za-z0-9+/_\-]{40,}={0,2}\b"), "[REDACTED_KEY]"),
+    # (no "/" in the class: long runs with slashes are file paths in tracebacks, not keys)
+    (re.compile(r"\b[A-Za-z0-9+_\-]{40,}={0,2}\b"), "[REDACTED_KEY]"),
 ]
 
 
