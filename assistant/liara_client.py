@@ -69,7 +69,8 @@ def _raise_for_response(resp: requests.Response, token: str) -> None:
         raise LiaraError("unauthorized", status)
     if status == 404:
         raise LiaraError("not_found", status)
-    if status == 400 and "frozen_project" in text:
+    # 402 "Not enough balance." is live-verified (2026-10-23) on create calls.
+    if status == 402 or (status == 400 and "frozen_project" in text):
         raise LiaraError("frozen", status)
     if status == 429:
         raise LiaraError("rate_limited", status)
@@ -230,8 +231,8 @@ class LiaraClient:
         return out
 
     def create_project(self, name: str, platform: str, plan_id: str, network: str | None = None) -> dict:
-        """POST /v1/projects (spec: Create-app). Body has name, planID, platform, network."""
-        body = {"name": name, "planID": plan_id, "platform": platform}
+        """POST /v1/projects {name, planID, platform, bundlePlanID?, network?}."""
+        body = {"name": name, "planID": plan_id, "platform": platform, **_bundle(plan_id)}
         if network:
             body["network"] = network
         self._request("POST", "/v1/projects", json_body=body)
@@ -404,15 +405,31 @@ class LiaraClient:
             message=f"rollback to {release_id}",
         )
 
-    # ---- plans (UNVERIFIED: no plans endpoint in the specs)
+    # ---- networks (live-checked 2026-10-23: without `network`, creating a g2 app
+    # answers g2_plan_unavailable on accounts that use private networks)
+
+    def list_networks(self) -> list[dict]:
+        """GET /v1/networks -> [{id, name}]."""
+        data = self._request("GET", "/v1/networks")
+        return [
+            {"id": n.get("_id", ""), "name": n.get("name", "")}
+            for n in _as_list(data.get("networks") if isinstance(data, dict) else None)
+            if isinstance(n, dict)
+        ]
+
+    def create_network(self, name: str) -> None:
+        """POST /v1/networks {networkName} (Liara CLI network:create)."""
+        self._request("POST", "/v1/networks", json_body={"networkName": name})
+
+    # ---- plans (live-verified 2026-10-23: there is no /v1/plans; plans come from /v1/me)
 
     def list_plans(self) -> list[dict]:
-        """UNVERIFIED guess: GET /v1/plans, normalized defensively.
+        """GET /v1/me -> plans, the same source the Liara CLI uses.
 
         -> [{id, kind: "app"|"database", ram_mb, cpu, disk_gb, price_month_toman}].
         """
-        data = self._request("GET", "/v1/plans")
-        return _normalize_plans(data)
+        data = self._request("GET", "/v1/me")
+        return _normalize_plans(data.get("plans") if isinstance(data, dict) else None)
 
     # ---- databases (spec: spec_dbaas.yaml)
 
@@ -431,11 +448,15 @@ class LiaraClient:
             if isinstance(d, dict)
         ]
 
-    def create_database(self, type: str, name: str, plan_id: str, version: str | None = None) -> dict:
-        """POST /v1/databases {type, hostname, planID, version?, publicNetwork} -> {id}."""
-        body: dict[str, Any] = {"type": type, "hostname": name, "planID": plan_id, "publicNetwork": False}
+    def create_database(self, type: str, name: str, plan_id: str, version: str | None = None, network: str | None = None) -> dict:
+        """POST /v1/databases {type, hostname, planID, bundlePlanID?, version?, network?, publicNetwork} -> {id}."""
+        body: dict[str, Any] = {
+            "type": _DB_TYPES.get(type, type), "hostname": name, "planID": plan_id, "publicNetwork": False, **_bundle(plan_id),
+        }
         if version:
             body["version"] = version
+        if network:
+            body["network"] = network
         data = self._request("POST", "/v1/databases", json_body=body)
         db_id = data.get("databaseID") if isinstance(data, dict) else None
         if not db_id:
@@ -497,44 +518,55 @@ class LiaraClient:
     # NOTE: no get_me()/balance method: none of the public specs has an account or balance endpoint.
 
 
-def _normalize_plans(data: Any) -> list[dict]:
-    """Defensive plan normalizer for the UNVERIFIED /v1/plans response."""
-    rows: list[tuple[str, dict]] = []
+# Live-verified 2026-10-23: POST /v1/databases accepts "postgres", not "postgresql".
+_DB_TYPES = {"postgresql": "postgres"}
 
-    def walk(node: Any, kind: str) -> None:
-        if isinstance(node, list):
-            for item in node:
-                if isinstance(item, dict) and (item.get("id") or item.get("_id") or item.get("planID")):
-                    rows.append((kind, item))
-                else:
-                    walk(item, kind)
-        elif isinstance(node, dict):
-            for key, value in node.items():
-                k = str(key).lower()
-                sub = "database" if ("db" in k or "database" in k) else ("app" if k in ("app", "apps", "projects", "plans") else kind)
-                walk(value, sub)
 
-    walk(data, "app")
+def _bundle(plan_id: str) -> dict:
+    """Feature bundle for a plan. The Liara CLI sends `bundlePlanID` for g2 plans.
+
+    In /v1/me, a g2 plan's monthly price equals its "standard" bundle price, so
+    "standard" keeps the cost the user approved. Not live-verified: a create call
+    builds a paid resource.
+    """
+    return {"bundlePlanID": "standard"} if plan_id.endswith("-g2") else {}
+
+
+def _normalize_plans(plans: Any) -> list[dict]:
+    """Normalize `plans` from GET /v1/me.
+
+    `plans.projects` and `plans.databases` map plan ID -> {available, price, volume,
+    RAM: {amount}, CPU: {amount}, region?, displayPrice?}. `displayPrice` is toman per
+    month; `price` is toman per hour (the CLI shows price * 720 per month). Like the CLI, only available current-generation ("-g2")
+    plans are returned, and app plans must be in the "iran" region.
+    """
+    if not isinstance(plans, dict):
+        return []
     out = []
-    for kind, p in rows:
-        explicit = str(p.get("kind") or p.get("type") or "").lower()
-        if explicit in ("app", "database"):
-            kind = explicit
-        monthly = _num(p.get("monthlyPrice") or p.get("price"))
-        if monthly is None and _num(p.get("hourlyPrice")) is not None:
-            monthly = _num(p.get("hourlyPrice")) * 720
-        ram = _num(p.get("ram") or p.get("memory"))
-        disk = _num(p.get("disk") or p.get("storage"))
-        out.append(
-            {
-                "id": p.get("id") or p.get("_id") or p.get("planID"),
-                "kind": kind,
-                "ram_mb": int(ram) if ram is not None else None,
-                "cpu": _num(p.get("cpu")),
-                "disk_gb": disk,
-                "price_month_toman": int(monthly) if monthly is not None else None,
-            }
-        )
+    for section, kind in (("projects", "app"), ("databases", "database")):
+        items = plans.get(section)
+        if not isinstance(items, dict):
+            continue
+        for plan_id, p in items.items():
+            if not isinstance(p, dict) or not p.get("available") or "g2" not in str(plan_id):
+                continue
+            if kind == "app" and p.get("region") != "iran":
+                continue
+            ram = _num((p.get("RAM") or {}).get("amount"))
+            hourly = _num(p.get("price"))
+            monthly = _num(p.get("displayPrice"))
+            if monthly is None and hourly is not None:
+                monthly = hourly * 720
+            out.append(
+                {
+                    "id": plan_id,
+                    "kind": kind,
+                    "ram_mb": int(ram * 1024) if ram is not None else None,
+                    "cpu": _num((p.get("CPU") or {}).get("amount")),
+                    "disk_gb": _num(p.get("volume")),
+                    "price_month_toman": round(monthly) if monthly is not None else None,
+                }
+            )
     return out
 
 
@@ -951,7 +983,14 @@ class FakeLiaraClient:
         with _fake_state() as st:
             return [{"id": d["id"], "type": d["type"], "status": d["status"], "plan_id": d["plan_id"], "host": d["host"]} for d in st["dbs"].values()]
 
-    def create_database(self, type: str, name: str, plan_id: str, version: str | None = None) -> dict:
+    def list_networks(self) -> list[dict]:
+        self._auth("list_networks")
+        return [{"id": "fake-net", "name": "assistant"}]
+
+    def create_network(self, name: str) -> None:
+        self._auth("create_network")
+
+    def create_database(self, type: str, name: str, plan_id: str, version: str | None = None, network: str | None = None) -> dict:
         self._auth("create_database")
         with _fake_state() as st:
             db_id = "db-" + uuid.uuid4().hex[:8]

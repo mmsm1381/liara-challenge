@@ -134,6 +134,25 @@ def change(action, tool, fn, *args, **kwargs):
     return result
 
 
+def _network(action, client):
+    """The account's first private network; one is created when there is none.
+
+    Live-checked 2026-10-23: without `network`, creating a g2 app answers
+    g2_plan_unavailable on accounts that use private networks. The app and its
+    database share this network.
+    """
+    try:
+        networks = client.list_networks()
+        if not networks:
+            change(action, "create_network", client.create_network, "assistant")
+            networks = client.list_networks()
+    except LiaraError as exc:
+        raise StepFailed(exc.message_fa) from exc
+    if not networks:
+        raise StepFailed("شبکه‌ی خصوصی در لیارا ساخته نشد.")
+    return networks[0]["id"]
+
+
 def run_action(action_id):
     try:
         _run_action(action_id)
@@ -415,7 +434,8 @@ def run_deploy(action, client, progress):
 
     if action.tool == "deploy":
         progress.start(step)
-        change(action, "create_project", client.create_project, app_name, platform, a["app_plan"])
+        network = _network(action, client)
+        change(action, "create_project", client.create_project, app_name, platform, a["app_plan"], network=network)
         created.append(f"برنامه‌ی {app_name}")
         step += 1
 
@@ -423,7 +443,7 @@ def run_deploy(action, client, progress):
         if a.get("db_kind"):
             progress.start(step)
             db_name = f"{app_name}-db"
-            res = change(action, "create_database", client.create_database, a["db_kind"], db_name, a["db_plan"])
+            res = change(action, "create_database", client.create_database, a["db_kind"], db_name, a["db_plan"], network=network)
             created.append(f"دیتابیس {db_name}")
             site.db_name, site.db_type = res.get("id") or db_name, a["db_kind"]
             site.save(update_fields=["db_name", "db_type"])

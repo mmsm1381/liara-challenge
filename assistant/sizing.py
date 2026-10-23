@@ -20,9 +20,8 @@ def toman(amount) -> str:
 def _tiers(plans, kind):
     rows = [p for p in plans if p.get("kind") == kind and p.get("id")]
     rows.sort(key=lambda p: (p.get("price_month_toman") or 0, p.get("ram_mb") or 0))
-    if len(rows) <= 3:
-        return rows
-    return [rows[0], rows[len(rows) // 3], rows[(2 * len(rows)) // 3]]
+    # Liara lists plans up to 64 GB; the three cheapest cover small, medium and large sites.
+    return rows[:3]
 
 
 def _pick(tiers, index):
