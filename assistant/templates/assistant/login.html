@@ -1,0 +1,22 @@
+{% extends "assistant/base.html" %}
+{% block title %}ورود{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <form method="post" class="auth-card">
+    {% csrf_token %}
+    <h1>ورود</h1>
+    {% if form.non_field_errors %}<div class="form-errors">{% for e in form.non_field_errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+    <div class="form-field">
+      <label for="{{ form.username.id_for_label }}">ایمیل یا نام کاربری</label>
+      <input type="text" name="{{ form.username.html_name }}" id="{{ form.username.id_for_label }}" dir="ltr" autocomplete="username" required autofocus value="{{ form.username.value|default:'' }}">
+    </div>
+    <div class="form-field">
+      <label for="{{ form.password.id_for_label }}">رمز عبور</label>
+      <input type="password" name="{{ form.password.html_name }}" id="{{ form.password.id_for_label }}" dir="ltr" autocomplete="current-password" required>
+    </div>
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <button type="submit" class="btn btn-primary btn-block">ورود</button>
+    <p class="auth-alt"><a href="/signup/">حساب ندارید؟ ثبت‌نام</a></p>
+  </form>
+</div>
+{% endblock %}

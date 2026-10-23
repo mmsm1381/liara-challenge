@@ -1,0 +1,9 @@
+{
+  "platform": "django",
+  "port": 8000,
+  "django": {
+    "collectStatic": true,
+    "compileMessages": false,
+    "modifySettings": false
+  }
+}

@@ -1,0 +1,14 @@
+<div class="card approval" data-state="{{ b.state }}">
+  <div class="card-title">{{ b.title|default:"تأیید شما لازم است" }}</div>
+  {% if b.lines %}<ul class="bullets">{% for l in b.lines %}<li>{{ l }}</li>{% endfor %}</ul>{% endif %}
+  {% if b.cost %}<div class="meta-line">هزینه: <bdi>{{ b.cost }}</bdi></div>{% endif %}
+  {% if b.downtime %}<div class="meta-line">قطعی: <bdi>{{ b.downtime }}</bdi></div>{% endif %}
+  {% if b.state == "proposed" %}
+  <div class="approval-actions">
+    <button type="button" class="btn btn-primary" data-action-id="{{ b.action_id }}" data-decision="confirm">تأیید</button>
+    <button type="button" class="btn btn-outline" data-action-id="{{ b.action_id }}" data-decision="cancel">لغو</button>
+  </div>
+  {% else %}
+  <div class="state-badge state-{{ b.state }}">{% if b.state == "approved" %}تأیید شد{% elif b.state == "rejected" %}لغو شد{% elif b.state == "expired" %}منقضی شد{% elif b.state == "running" %}در حال اجرا{% elif b.state == "succeeded" %}انجام شد{% elif b.state == "failed" %}ناموفق{% else %}نامشخص{% endif %}</div>
+  {% endif %}
+</div>

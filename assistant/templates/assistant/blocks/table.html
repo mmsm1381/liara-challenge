@@ -1,0 +1,7 @@
+<div class="card table-card">
+  {% if b.title %}<div class="card-title">{{ b.title }}</div>{% endif %}
+  <div class="table-scroll"><table class="tbl">
+    <thead><tr>{% for c in b.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in b.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+  </table></div>
+</div>

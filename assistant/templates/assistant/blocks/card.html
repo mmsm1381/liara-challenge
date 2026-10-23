@@ -1,0 +1,7 @@
+<div class="card">
+  {% if b.title %}<div class="card-title">{{ b.title }}</div>{% endif %}
+  <ul class="card-items">{% for it in b.items %}
+    <li><span class="item-title"{% if it.ltr %} dir="ltr"{% endif %}>{{ it.title }}</span>{% if it.subtitle %}<span class="item-sub"{% if it.ltr %} dir="ltr"{% endif %}>{{ it.subtitle }}</span>{% endif %}</li>{% endfor %}
+  </ul>
+  {% if b.footer %}<div class="card-footer">{{ b.footer }}</div>{% endif %}
+</div>

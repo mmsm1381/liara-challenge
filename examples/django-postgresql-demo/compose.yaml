@@ -1,0 +1,30 @@
+name: liara-booking-example
+services:
+  web:
+    build: .
+    ports: ["127.0.0.1:8001:8000"]
+    environment:
+      SECRET_KEY: local-demo-only-change-for-any-deployment
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DB_NAME: bookings
+      DB_USER: demo
+      DB_PASSWORD: local-example-only
+      DB_HOST: database
+    depends_on:
+      database:
+        condition: service_healthy
+    command: ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn demo.wsgi:application --bind 0.0.0.0:8000 --workers 1"]
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bookings
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: local-example-only
+    volumes: ["demo-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d bookings"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  demo-data:

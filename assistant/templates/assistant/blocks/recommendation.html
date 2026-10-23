@@ -1,0 +1,6 @@
+<div class="card reco">
+  <div class="card-title">{{ b.title }}</div>
+  <dl class="reco-lines">{% for l in b.lines %}<div class="reco-line"><dt>{{ l.label }}</dt><dd>{{ l.value }}</dd></div>{% endfor %}</dl>
+  {% if b.total %}<div class="reco-total">{{ b.total }}</div>{% endif %}
+  {% if b.reason %}<p class="reco-reason">{{ b.reason }}</p>{% endif %}
+</div>

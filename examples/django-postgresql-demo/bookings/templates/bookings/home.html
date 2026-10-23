@@ -1,0 +1,3 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Booking demo</title></head>
+<body><main><h1>Booking demo</h1><p>A small project for testing ZIP inspection and deployment. Test data only.</p><form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Add booking</button></form><h2>Recent bookings</h2><ul>{% for booking in bookings %}<li>{{ booking.name }}</li>{% empty %}<li>No bookings yet.</li>{% endfor %}</ul><p><a href="/health/">Check database connectivity</a></p></main></body></html>

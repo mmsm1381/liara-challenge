@@ -1,0 +1,5 @@
+<div class="card progress" data-job-id="{{ b.job_id }}" data-done="{{ b.done|yesno:'1,0' }}">
+  <ul class="prog-steps">{% for s in b.steps %}
+    <li class="prog-step prog-{{ s.state }}"><span class="prog-icon" aria-hidden="true">{% if s.state == "done" %}✓{% elif s.state == "failed" %}✗{% endif %}</span><span class="prog-label">{{ s.label }}</span></li>{% endfor %}
+  </ul>
+</div>

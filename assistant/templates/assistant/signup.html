@@ -1,0 +1,14 @@
+{% extends "assistant/base.html" %}
+{% block title %}ثبت‌نام{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <form method="post" class="auth-card auth-form-generic">
+    {% csrf_token %}
+    <h1>ثبت‌نام</h1>
+    {% if form.non_field_errors %}<div class="form-errors">{% for e in form.non_field_errors %}<div>{{ e }}</div>{% endfor %}</div>{% endif %}
+    {{ form.as_div }}
+    <button type="submit" class="btn btn-primary btn-block">ثبت‌نام</button>
+    <p class="auth-alt"><a href="/login/">حساب دارید؟ ورود</a></p>
+  </form>
+</div>
+{% endblock %}
