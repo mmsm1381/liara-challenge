@@ -1,7 +1,6 @@
-"""AI fallback for projects the deterministic rules in inspection.py don't recognize.
+"""AI project detection: what platform, port, services and env vars a ZIP needs.
 
-The rules always run first; this module is only called when they return no
-platform. The model sees a small, redacted slice of the archive (file tree,
+inspection.py first checks that the archive is safe to read. The model then sees a small, redacted slice of the archive (file tree,
 manifest files, the first lines of likely entry points; never .env files) and
 must answer with one JSON object. Every field is validated here:
 
@@ -75,6 +74,7 @@ Reply with ONE JSON object and nothing else:
  "port": integer the app listens on, or null,
  "services": [{"kind": one of %(services)s, "evidence": "exact text copied from the files that shows it is needed", "reason_fa": "one short Persian sentence"}],
  "env_vars": ["ENV_VAR_NAMES the code reads"],
+ "blocker_fa": "if the project cannot run on that platform as uploaded (e.g. a Node.js package.json without a start script), one short Persian sentence saying what to fix; otherwise null",
  "summary_fa": "one short Persian sentence describing the project"}
 
 Rules: if liara.json declares a platform, use it. Choose `docker` only if there is a Dockerfile and no better platform. Choose `static` for plain HTML/CSS/JS
@@ -160,6 +160,9 @@ def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
     confidence = raw.get("confidence")
     if declared:
         platform, confidence = declared, "high"
+    blocker = _clean_text(raw.get("blocker_fa"), 200)
+    if blocker:
+        raise DetectionFailed(blocker)
     if platform not in PLATFORMS or confidence not in ("high", "medium"):
         raise DetectionFailed("نتوانستم با اطمینان تشخیص بدهم این پروژه چیست.")
 

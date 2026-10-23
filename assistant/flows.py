@@ -175,23 +175,17 @@ def handle_upload(user, conv, upload):
         path.unlink(missing_ok=True)
         return [chat.bot(conv, "", chat.error(f"این فایل را نمی‌توانم بپذیرم: {_inspection_fa(exc.code)}",
                                               "یک zip سالم از پوشه‌ی پروژه بساز و دوباره بفرست."))]
-    project = report["project"]
-    if project["platform"] is None:
-        # The rules don't know this kind of project: ask the model, then let the user confirm.
-        if not orchestrator._within_daily_cap(user):
-            path.unlink(missing_ok=True)
-            return [chat.bot(conv, "", chat.error("سقف استفاده‌ی امروز از هوش مصنوعی پر شده.", "فردا دوباره امتحان کن."))]
-        try:
-            project = ai_detect.detect(path)
-        except ai_detect.DetectionFailed as exc:
-            path.unlink(missing_ok=True)
-            return [chat.bot(conv, "", chat.error(f"این پروژه را نشناختم: {exc.reason_fa}",
-                                                  "یک liara.json با فیلد platform در ریشه‌ی پروژه بگذار و دوباره بفرست."))]
-    elif not project["supported"]:
-        # A known platform with a concrete problem (e.g. no start script): the rule's reason is precise.
+    # What kind of project this is is decided by the model, then validated and confirmed by the user.
+    if not orchestrator._within_daily_cap(user):
         path.unlink(missing_ok=True)
-        return [chat.bot(conv, "", chat.error(project["unsupported_reason_fa"] or "این نوع پروژه هنوز پشتیبانی نمی‌شود.",
-                                              "مشکل را درست کن و دوباره فایل zip را بفرست."))]
+        return [chat.bot(conv, "", chat.error("سقف استفاده‌ی امروز از هوش مصنوعی پر شده.", "فردا دوباره امتحان کن."))]
+    try:
+        project = ai_detect.detect(path)
+    except ai_detect.DetectionFailed as exc:
+        path.unlink(missing_ok=True)
+        return [chat.bot(conv, "", chat.error(f"این پروژه را نمی‌توانم دیپلوی کنم: {exc.reason_fa}",
+                                              "اگر نوع پروژه را می‌دانی، یک liara.json با فیلد platform در ریشه‌ی پروژه بگذار و دوباره بفرست."))]
+    project["warnings_fa"] = report["warnings_fa"] + project["warnings_fa"]
     items = [
         {"title": f"پلتفرم: {PLATFORM_FA.get(project['platform'], project['platform'])}",
          "subtitle": f"دستور اجرا: {project['start_command']}" if project.get("start_command") else "دستور اجرا را لیارا خودش تعیین می‌کند"},
@@ -204,17 +198,11 @@ def handle_upload(user, conv, upload):
         blocks.append(chat.note("لازم نیست کاری بکنی: این‌ها را خودم روی لیارا می‌سازم و به برنامه‌ات وصل می‌کنم."))
     for warning in project.get("warnings_fa") or []:
         blocks.append(chat.note(warning, "warning"))
-    ai = project.get("detected_by") == "ai"
-    chat.set_state(conv, flow="deploy", step="confirm_detect" if ai else "visitors", upload_id=upload_id,
+    chat.set_state(conv, flow="deploy", step="confirm_detect", upload_id=upload_id,
                    project=project, source_name=Path(upload.name).stem)
-    if ai:
-        summary = project.get("summary_fa") or ""
-        out = [chat.bot(conv, "این نوع پروژه را با قوانین ثابتم نمی‌شناختم، پس با هوش مصنوعی بررسی‌اش کردم. " + summary, *blocks)]
-        out.append(chat.bot(conv, "این تشخیص درست است؟", CONFIRM_DETECT_BUTTONS))
-        return out
-    out = [chat.bot(conv, "پروژه را بررسی کردم.", *blocks)]
-    out.append(chat.bot(conv, "روزانه حدوداً چند نفر به سایتت سر می‌زنند؟", VISITOR_BUTTONS))
-    return out
+    summary = project.get("summary_fa") or ""
+    return [chat.bot(conv, "پروژه را بررسی کردم. " + summary, *blocks),
+            chat.bot(conv, "این تشخیص درست است؟", CONFIRM_DETECT_BUTTONS)]
 
 
 def _inspection_fa(code):
