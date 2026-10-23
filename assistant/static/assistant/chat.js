@@ -32,7 +32,73 @@
     busy += on ? 1 : -1;
     if (busy < 0) busy = 0;
     sendBtn.disabled = busy > 0;
+    sendBtn.classList.toggle('is-busy', busy > 0);
+    sendBtn.setAttribute('aria-busy', busy > 0 ? 'true' : 'false');
   }
+
+  // Typing indicator: one at a time, with staged labels for long waits.
+  var typingEl = null;
+  var typingTimers = [];
+
+  var echoEl = null;
+
+  function hideTyping() {
+    typingTimers.forEach(clearTimeout);
+    typingTimers = [];
+    if (typingEl) { typingEl.remove(); typingEl = null; }
+    // The server returns the real user bubble; drop the optimistic copy.
+    if (echoEl) { echoEl.remove(); echoEl = null; }
+  }
+
+  // Show the user's own text at once, before the (possibly slow) answer arrives.
+  function showEcho(text) {
+    if (!text) return;
+    var d = document.createElement('div');
+    d.className = 'msg msg-user msg-pending';
+    var b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = text;
+    d.appendChild(b);
+    thread.appendChild(d);
+    echoEl = d;
+  }
+
+  // stages: [[delayMs, label], ...] sorted by delay; first one is shown at once.
+  function showTyping(stages) {
+    hideTyping();
+    if (!stages || !stages.length) return;
+    var d = document.createElement('div');
+    d.className = 'msg msg-bot msg-typing';
+    d.setAttribute('role', 'status');
+    d.setAttribute('aria-live', 'polite');
+    var b = document.createElement('div');
+    b.className = 'bubble bubble-typing';
+    var dots = document.createElement('span');
+    dots.className = 'typing-dots';
+    dots.setAttribute('aria-hidden', 'true');
+    for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('span'));
+    var label = document.createElement('span');
+    label.className = 'typing-label';
+    label.textContent = stages[0][1];
+    b.appendChild(dots);
+    b.appendChild(label);
+    d.appendChild(b);
+    thread.appendChild(d);
+    typingEl = d;
+    stages.slice(1).forEach(function (st) {
+      typingTimers.push(setTimeout(function () {
+        if (typingEl === d) label.textContent = st[1];
+      }, st[0]));
+    });
+    scrollDown();
+  }
+
+  var SEND_STAGES = [[0, 'دارم فکر می\u200cکنم'], [4000, 'دارم وضعیت و لاگ\u200cها را بررسی می\u200cکنم'], [15000, 'هنوز دارم بررسی می\u200cکنم؛ کمی بیشتر طول می\u200cکشد']];
+  var GITHUB_STAGES = [[0, 'دارم مخزن را از گیت\u200cهاب دریافت می\u200cکنم']].concat(SEND_STAGES.slice(1));
+  var UPLOAD_STAGES = [[0, 'در حال بررسی فایل...'], [3000, 'دارم نوع پروژه را تشخیص می\u200cدهم']];
+  var KEY_STAGES = [[0, 'دارم کلید را بررسی می\u200cکنم']];
+  var APPROVE_STAGES = [[0, 'دارم درخواست را اعمال می\u200cکنم']];
+  var RESET_STAGES = [[0, 'دارم گفتگو را بازنشانی می\u200cکنم']];
 
   function showError(text) {
     errEl.textContent = text || '';
@@ -125,12 +191,15 @@
   }
 
   // Returns a promise resolving true on success, false on failure.
-  function request(url, opts) {
+  function request(url, opts, stages, echo) {
     setBusy(true);
     opts = opts || {};
+    showTyping(stages);
+    if (echo) { showEcho(echo); if (typingEl) thread.appendChild(typingEl); scrollDown(); }
     return fetch(url, opts)
       .then(function (r) {
         return r.json().catch(function () { return null; }).then(function (data) {
+          hideTyping();
           if (data && (data.messages || data.composer)) {
             apply(data);
             return r.ok;
@@ -139,19 +208,20 @@
         });
       })
       .catch(function () {
+        hideTyping();
         netErrorBubble();
         return false;
       })
       .then(function (ok) { setBusy(false); return ok; });
   }
 
-  function post(url, body) {
+  function post(url, body, stages, echo) {
     return request(url, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf() },
       body: JSON.stringify(body || {})
-    });
+    }, stages, echo);
   }
 
   function submit() {
@@ -162,7 +232,7 @@
       if (!key) { showError('کلید را وارد کنید.'); input.focus(); return; }
       input.value = '';
       showError('');
-      post('/chat/key', { key: key });
+      post('/chat/key', { key: key }, KEY_STAGES);
       key = null;
       return;
     }
@@ -170,7 +240,7 @@
     if (!text) return;
     input.value = '';
     showError('');
-    post('/chat/send', { text: text });
+    post('/chat/send', { text: text }, /^https:\/\/github\.com\//i.test(text) ? GITHUB_STAGES : SEND_STAGES, text);
   }
 
   composerEl.addEventListener('submit', function (e) { e.preventDefault(); submit(); });
@@ -186,7 +256,7 @@
       var row = pill.closest('.pills');
       var all = row ? row.querySelectorAll('.pill') : [pill];
       all.forEach(function (b) { b.disabled = true; });
-      post('/chat/send', { text: pill.getAttribute('data-label'), value: pill.getAttribute('data-value') })
+      post('/chat/send', { text: pill.getAttribute('data-label'), value: pill.getAttribute('data-value') }, SEND_STAGES, pill.getAttribute('data-label'))
         .then(function (ok) { if (!ok) all.forEach(function (b) { b.disabled = false; }); });
       return;
     }
@@ -195,7 +265,7 @@
       var wrap = act.closest('.approval-actions') || act.parentNode;
       var btns = wrap.querySelectorAll('button');
       btns.forEach(function (b) { b.disabled = true; });
-      post('/chat/approve', { action_id: act.getAttribute('data-action-id'), decision: act.getAttribute('data-decision') })
+      post('/chat/approve', { action_id: act.getAttribute('data-action-id'), decision: act.getAttribute('data-decision') }, APPROVE_STAGES)
         .then(function (ok) { if (!ok) btns.forEach(function (b) { b.disabled = false; }); });
     }
   });
@@ -204,7 +274,7 @@
     resetBtn.addEventListener('click', function () {
       if (busy) return;
       Object.keys(streams).forEach(function (k) { streams[k].close(); delete streams[k]; });
-      post('/chat/reset', {});
+      post('/chat/reset', {}, RESET_STAGES);
     });
   }
 
@@ -221,11 +291,6 @@
         return;
       }
       showError('');
-      var pending = document.createElement('div');
-      pending.className = 'msg msg-bot';
-      pending.innerHTML = '<div class="bubble bubble-pending">در حال بررسی فایل...</div>';
-      thread.appendChild(pending);
-      scrollDown();
       var fd = new FormData();
       fd.append('file', f);
       request('/chat/upload', {
@@ -233,7 +298,7 @@
         credentials: 'same-origin',
         headers: { 'X-CSRFToken': csrf() },
         body: fd
-      }).then(function () { pending.remove(); });
+      }, UPLOAD_STAGES);
     });
   }
 
