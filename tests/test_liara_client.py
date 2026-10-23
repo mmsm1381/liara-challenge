@@ -195,10 +195,93 @@ def test_get_database_returns_password_to_caller(client):
     assert d["password"] == "pw" and d["internal_host"] == "h"
 
 
-def test_plans_defensive():
-    plans = lc._normalize_plans({"plans": {"standard": [{"id": "p1", "ram": 512, "cpu": 1, "disk": 2, "price": 100}]}})
-    assert plans[0]["id"] == "p1" and plans[0]["price_month_toman"] == 100
+def test_list_plans_reads_me_endpoint(client):
+    """Liara has no /v1/plans; plans come from GET /v1/me (shape recorded from the live API)."""
+    # Given: a /v1/me answer with current, legacy, unavailable and foreign-region plans
+    client.queue.append(Resp(200, {"user": {}, "plans": {
+        "projects": {
+            "small-g2": {"available": True, "price": 659.72, "displayPrice": 475000, "volume": 5, "RAM": {"amount": 0.5}, "CPU": {"amount": 0.5}, "region": "iran"},
+            "mini-g2": {"available": False, "price": 381.94, "volume": 2.5, "RAM": {"amount": 0.25}, "CPU": {"amount": 0.25}, "region": "iran"},
+            "ir-small": {"available": True, "price": 1319.44, "volume": 5, "RAM": {"amount": 0.5}, "CPU": {"amount": 0.5}, "region": "iran"},
+        },
+        "databases": {
+            "medium-g2": {"available": True, "price": 1145.83, "displayPrice": 825000, "volume": 10, "RAM": {"amount": 1}, "CPU": {"amount": 1}},
+        },
+    }}))
+
+    # When: the plans are listed
+    plans = client.list_plans()
+
+    # Then: only available g2 plans come back, with the monthly price in toman
+    assert client.sent[0][1] == "https://api.test/v1/me"
+    assert plans == [
+        {"id": "small-g2", "kind": "app", "ram_mb": 512, "cpu": 0.5, "disk_gb": 5, "price_month_toman": 475_000},
+        {"id": "medium-g2", "kind": "database", "ram_mb": 1024, "cpu": 1, "disk_gb": 10, "price_month_toman": 825_000},
+    ]
     assert lc._normalize_plans("garbage") == []
+
+
+def test_create_project_sends_bundle_for_g2_plan(client):
+    """The live API lists g2 plans with feature bundles; the Liara CLI always sends one."""
+    # Given: a current-generation plan
+    # When: the app is created
+    client.create_project("shop", "django", "small-g2")
+
+    # Then: the "standard" bundle, whose price is the plan's listed price, is sent
+    assert client.sent[0][2]["json"] == {"name": "shop", "planID": "small-g2", "platform": "django", "bundlePlanID": "standard"}
+
+
+def test_create_database_uses_liara_type_name(client):
+    """The live API rejects "postgresql"; its type name is "postgres"."""
+    # Given: Liara answers with the new database ID
+    client.queue.append(Resp(200, {"databaseID": "d1"}))
+
+    # When: a PostgreSQL database is created on a g2 plan
+    client.create_database("postgresql", "shop-db", "small-g2")
+
+    # Then: the Liara type name and the bundle are sent
+    body = client.sent[0][2]["json"]
+    assert body["type"] == "postgres" and body["bundlePlanID"] == "standard"
+
+
+def test_payment_required_means_no_balance(client):
+    """Live answer for an account without credit: 402 "Not enough balance."."""
+    # Given: Liara answers 402
+    client.queue.append(Resp(402, {"statusCode": 402, "message": "Not enough balance."}))
+
+    # When / Then: the user is told to charge the account
+    with pytest.raises(LiaraError) as e:
+        client.create_project("shop", "django", "small-g2", network="n1")
+    assert e.value.code == "frozen"
+
+
+def test_networks(client):
+    """Accounts with private networks need one; the CLI lists and creates them."""
+    # Given: one network on the account
+    client.queue.extend([Resp(200, {"networks": [{"_id": "n1", "name": "assistant", "createdAt": "x"}]}), Resp(200, {})])
+
+    # When: networks are listed and one is created
+    networks = client.list_networks()
+    client.create_network("assistant")
+
+    # Then: the CLI's paths and body are used
+    assert networks == [{"id": "n1", "name": "assistant"}]
+    assert client.sent[1][1] == "https://api.test/v1/networks"
+    assert client.sent[1][2]["json"] == {"networkName": "assistant"}
+
+
+def test_create_calls_send_network(client):
+    """Without `network`, Liara answers g2_plan_unavailable for private-network accounts."""
+    # Given: Liara accepts both calls
+    client.queue.extend([Resp(200, {}), Resp(200, {"databaseID": "d1"})])
+
+    # When: an app and a database are created in network n1
+    client.create_project("shop", "django", "small-g2", network="n1")
+    client.create_database("postgresql", "shop-db", "small-g2", network="n1")
+
+    # Then: both bodies carry the network ID
+    assert client.sent[0][2]["json"]["network"] == "n1"
+    assert client.sent[1][2]["json"]["network"] == "n1"
 
 
 def test_check_url_never_raises(monkeypatch, settings):

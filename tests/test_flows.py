@@ -252,3 +252,46 @@ def test_key_pasted_as_text_is_not_stored(client):
     post(client, "/chat/send", text="eyJhbGciOiJIUzI1NiJ9.payload-PASTED.signature")
     assert "PASTED" not in all_text(client.user)
     assert LiaraConnection.objects.filter(user=client.user).exists()
+
+
+def test_size_tiers_are_the_three_cheapest_plans():
+    """With Liara's real list of 8 app plans, "large" must not jump to a 16 GB plan."""
+    # Given: eight app plans, as the live API returns them
+    from assistant import sizing
+    plans = [{"id": f"p{i}", "kind": "app", "price_month_toman": 100 * 2 ** i} for i in range(8)]
+
+    # When: the tiers are picked
+    tiers = sizing._tiers(plans, "app")
+
+    # Then: small, medium and large are the three cheapest plans
+    assert [p["id"] for p in tiers] == ["p0", "p1", "p2"]
+
+
+class _NetClient:
+    def __init__(self, networks):
+        self.networks = networks
+        self.created = []
+
+    def list_networks(self):
+        return list(self.networks)
+
+    def create_network(self, name):
+        self.created.append(name)
+        self.networks.append({"id": "n-new", "name": name})
+
+
+@pytest.mark.parametrize("existing,expected,created", [
+    ([{"id": "n1", "name": "mine"}], "n1", []),
+    ([], "n-new", ["assistant"]),
+])
+def test_deploy_network_is_reused_or_created(monkeypatch, existing, expected, created):
+    """A deploy uses the account's first private network and creates one only when there is none."""
+    # Given: an account with or without a network
+    monkeypatch.setattr(jobs, "audit", lambda *a, **k: None)
+    client = _NetClient(existing)
+
+    # When: the deploy picks its network
+    network = jobs._network(object(), client)
+
+    # Then: the existing one is reused, or one is created
+    assert network == expected and client.created == created
