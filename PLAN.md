@@ -28,6 +28,7 @@ assistant/
   models.py             LiaraConnection, Site, Release, SiteNote, Conversation,
                         Message, PendingAction, Job, AuditLog
   crypto.py             Fernet token encryption
+  held.py               short-lived encrypted storage for env var values typed in chat
   redact.py             strips tokens, passwords, URLs from text
   liara_client.py       the only module that talks to Liara (typed functions)
   llm.py                Liara AI chat-completions transport (native tools + prompt_json)

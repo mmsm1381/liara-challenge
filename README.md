@@ -75,6 +75,8 @@ A chat-only assistant, written in Persian, for people who run sites on Liara. Yo
 - The UI says: "کلید رمزنگاری‌شده ذخیره می‌شود و هیچ‌وقت برای مدل هوش مصنوعی فرستاده نمی‌شود."
 - A key pasted into the normal message box (instead of the password field) is routed to the same check and is never saved as a chat message.
 
+**User-supplied env var values.** A value the user types for an env var (for example `STRIPE_SECRET_KEY`) follows its own rules. It is typed in the password box, never shown in the chat and never stored in a `Message`. It is never sent to the LLM and never written to the audit log, which keeps only names. The approval card lists names only. The value is held encrypted (Fernet, `HeldSecret` in `assistant/held.py`) only until the approved job writes it to Liara, and is then deleted. It is also deleted on failure, rejection, cancel, expiry or reset. A value not yet attached to an approval expires after 30 minutes. An attached value lives at most for the 15-minute approval window plus the job. This is a deliberate, bounded exception to the rule that env var values are not stored, because the deploy runs in a worker after the user confirms.
+
 **Client.** `assistant/liara_client.py` is the only module that talks to Liara. It has typed methods only; there is no "call any URL" method. Change calls (POST) are never retried.
 
 **Endpoints** (copied from `API_NOTES.md`):
@@ -146,7 +148,7 @@ Read calls are different: while a build is running, the worker keeps polling `ge
 - **Redis is not created automatically.** Provision it on Liara and set `REDIS_URL`. A worker process is also needed unless `RQ_SYNC=1` (demo only).
 - **No deletes.** The assistant never deletes apps, databases or buckets. Cleanup is a message asking the user to delete them in the console.
 - **Single Liara team.** One connection per user, with no team selection in the flow.
-- **Some env vars must be set in the Liara console.** `propose_env_change` can only generate `SECRET_KEY`, `DJANGO_SECRET_KEY`, `ALLOWED_HOSTS` and `DJANGO_ALLOWED_HOSTS`. Any other variable (third-party API keys, for example) gets a link to the console.
+- **Env var values are asked in chat.** The assistant asks in a password box for values it cannot generate, such as third-party API keys, and the user can skip them. Optional detection only sees the files sent to the model, so some optional vars may still be asked; the user can skip those.
 - **Metrics history is thin.** The baseline is one snapshot taken at deploy time. Trends come only from what `metrics/summary` returns for the current window.
 - **LLM answers are not evaluated.** `docs/safety-cases.md` lists acceptance ideas, not results of runs. The test suite covers flows, inspection, the client, the LLM transport and the orchestrator, but not a live Liara account.
 
@@ -176,8 +178,9 @@ Chat is the only interface. The page shows the conversation with buttons, cards 
      Every upload is confirmed in chat with «این تشخیص درست است؟» ("is this right?") before the visitor and purpose questions. File contents are treated as untrusted data.
 2. Two questions: daily visitors ("کمتر از ۱۰۰", "۱۰۰ تا ۱۰۰۰", "بیشتر از ۱۰۰۰", "نمی‌دانم") and purpose ("کسب‌وکار واقعی" or "تست یا شخصی").
 3. A recommendation built from the live plan list, with the price and a reason. The user can ask for "ارزان‌ترش کن".
-4. An approval card with cost and downtime. "قبول، همین را بساز" starts the job. The job wires the database env vars (including Laravel's names), generates secrets such as `SECRET_KEY` and `APP_KEY` for Laravel, and sets `ALLOWED_HOSTS` and `APP_URL`.
-5. Live progress over SSE, step by step, followed by the site URL `https://<app>.liara.run` and a note that the home page answered.
+4. Secure value questions. The env vars the code needs are sorted into three groups after AI detection: filled automatically by the job (database vars including Laravel's names, generated secrets such as `SECRET_KEY` and `APP_KEY`, `ALLOWED_HOSTS` and `APP_URL`, storage bucket vars), probably optional (the code reads them with a default, such as `os.getenv("X", "d")`, `env('X', 'd')` or `process.env.X || d`), and needed from the user (third-party keys such as `STRIPE_SECRET_KEY`). For each needed value, the assistant asks one at a time in the password box: «(۱ از ۲) مقدار «X» را در کادر پایین وارد کن». The buttons are «بعداً در کنسول تنظیم می‌کنم» (set later in the console; the approval card then lists it), «اختیاری است، رد شو» (skip) and «لغو دیپلوی» (cancel). Values never appear in the chat.
+5. An approval card with cost and downtime. "قبول، همین را بساز" starts the job. The job wires the database env vars (including Laravel's names), generates secrets such as `SECRET_KEY` and `APP_KEY` for Laravel, and sets `ALLOWED_HOSTS` and `APP_URL`.
+6. Live progress over SSE, step by step, followed by the site URL `https://<app>.liara.run` and a note that the home page answered.
 
 Screenshots: `docs/screens/2-deploy-approval.png` (approval card) and `docs/screens/2-deploy-done.png` (finished deploy). Both were taken with the fake Liara client, so the plan names and prices in them are invented.
 
@@ -187,11 +190,13 @@ Screenshots: `docs/screens/2-deploy-approval.png` (approval card) and `docs/scre
 |---|---|---|
 | `frozen` | Account balance too low | none (charge the account) |
 | `missing_dependency` | Missing package in requirements or package.json | roll back to the previous release |
-| `missing_env` | Env var not set | set it (auto only for the four generated names) |
+| `missing_env` | Env var not set | set it: generated secrets and host/URL vars directly; any other variable is asked for in the secure box, then approved |
 | `database` | Cannot reach the database | restart the app |
 | `memory` | Plan too small for the traffic | plan one size up |
 | `port_mismatch` | Listening port differs from the release port | advice only: set the port and send a new version |
 | `bad_release` | Crash started right after the last release | roll back to the previous release |
+
+**Missing variables.** When `missing_env` finds a variable the assistant cannot generate, it asks for the value in the same password box and then shows an approval card (`env_change`) that sets it and restarts the app once. The «بعداً در کنسول تنظیم می‌کنم» button gives a link to the console instead. Variables the assistant can generate (the secrets and host/URL vars) are proposed directly, as before.
 
 Screenshot: `docs/screens/3-returning.png` (site list, quick replies, the comparison table, the fix proposal, the approval card and the verification result).
 
@@ -264,6 +269,7 @@ config/                  Django settings, urls, wsgi
 assistant/
   models.py              data models (section 2)
   crypto.py              Fernet encryption of tokens
+  held.py                short-lived encrypted storage for env var values typed in chat
   redact.py              strips tokens, passwords and URLs from text
   liara_client.py        the only module that talks to Liara; fake client for demos
   llm.py                 Liara AI transport (native tools or prompt_json)
