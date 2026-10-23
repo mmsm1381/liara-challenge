@@ -85,7 +85,7 @@ A chat-only assistant, written in Persian, for people who run sites on Liara. Yo
 |---|---|---|---|
 | `list_projects` | GET `/v1/projects` | paas.yaml | from spec, not live-verified |
 | `get_project` | GET `/v1/projects/{name}` | paas.yaml | from spec, not live-verified |
-| `create_project` | POST `/v1/projects` `{name, planID, platform, network?}` | paas.yaml | from spec, not live-verified |
+| `create_project` | POST `/v1/projects` `{name, planID, platform, bundlePlanID?, network?}` | paas.yaml + CLI | validation live-checked; a full create not run (`bundlePlanID` not verified) |
 | `get_logs` | GET `/v1/projects/{name}/logs?since=` | paas.yaml | from spec, not live-verified (unit of `since` unknown) |
 | `list_releases` | GET `/v1/projects/{name}/releases?page=&count=` | paas.yaml | from spec, not live-verified |
 | `get_metrics_summary` | GET `/v1/projects/{name}/metrics/summary` | paas.yaml | from spec, not live-verified |
@@ -97,9 +97,9 @@ A chat-only assistant, written in Persian, for people who run sites on Liara. Yo
 | `get_build_logs` | GET `/v2/releases/{id}/build-logs?since=` | CLI only | **UNVERIFIED** guess (response shape and `since` unit assumed) |
 | `cancel_build` | POST `/v2/releases/{id}/cancel` | CLI only | **UNVERIFIED** guess (not used by any flow) |
 | `rollback` | create_release reusing an old release's `sourceID` | none | **UNVERIFIED** guess; raises `bad_request` when no `source_id` is exposed (the usual case) |
-| `list_plans` | GET `/v1/plans` | none | **UNVERIFIED** guess, no plans endpoint in any spec |
+| `list_plans` | GET `/v1/me` -> `plans.projects`, `plans.databases` | CLI | live-verified (`/v1/plans` is 404) |
 | `list_databases` | GET `/v1/databases` | spec_dbaas.yaml | from spec, not live-verified |
-| `create_database` | POST `/v1/databases` `{type, hostname, planID, version?, publicNetwork}` -> `databaseID` | spec_dbaas.yaml | from spec, not live-verified |
+| `create_database` | POST `/v1/databases` `{type, hostname, planID, bundlePlanID?, version?, publicNetwork}` -> `databaseID` | spec_dbaas.yaml + CLI | validation live-checked (`type` is `postgres`); a full create not run |
 | `get_database` | GET `/v1/databases/{id}` | spec_dbaas.yaml | from spec, not live-verified |
 | `list_buckets` | GET `{storage}/api/v1/buckets` | spec_object-storage.yaml | from spec, not live-verified |
 | `create_bucket` | POST `{storage}/api/v1/buckets` `{name, plan, permission}` | spec_object-storage.yaml | from spec, not live-verified (plans `20g/40g/80g/160g`) |
