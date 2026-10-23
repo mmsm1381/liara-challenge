@@ -3,6 +3,8 @@
 import json
 import time
 
+from django.db.models import Q
+
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
@@ -16,8 +18,17 @@ from . import approvals, chat, flows
 from .models import Job, Message
 
 
-def _reply(conv, messages, **extra):
-    return JsonResponse({"messages": [chat.render(m) for m in messages if m], "composer": chat.composer_for(conv), **extra})
+def _reply(conv, messages, since_id=None, **extra):
+    """Everything created during this request (user bubble included) plus any refreshed messages."""
+    rows = {m.id: m for m in messages if m}
+    if since_id is not None:
+        rows.update({m.id: m for m in conv.messages.filter(id__gt=since_id)})
+    ordered = sorted(rows.values(), key=lambda m: m.id)
+    return JsonResponse({"messages": [chat.render(m) for m in ordered], "composer": chat.composer_for(conv), **extra})
+
+
+def _last_id(conv):
+    return conv.messages.order_by("-id").values_list("id", flat=True).first() or 0
 
 
 def _body(request):
@@ -47,8 +58,9 @@ def send(request):
     if body is None:
         return HttpResponseBadRequest()
     conv = chat.conversation_for(request.user)
+    since = _last_id(conv)
     messages = flows.handle_text(request.user, conv, str(body.get("text", "")), str(body.get("value", "") or ""))
-    return _reply(conv, messages)
+    return _reply(conv, messages, since)
 
 
 @sensitive_variables("body", "key")
@@ -61,7 +73,8 @@ def submit_key(request):
     conv = chat.conversation_for(request.user)
     if not key.strip():
         return _reply(conv, [chat.bot(conv, "", chat.error("کلید را وارد کنید."))])
-    return _reply(conv, flows.connect_key(request.user, conv, key))
+    since = _last_id(conv)
+    return _reply(conv, flows.connect_key(request.user, conv, key), since)
 
 
 @login_required
@@ -71,7 +84,8 @@ def upload(request):
     f = request.FILES.get("file")
     if f is None:
         return _reply(conv, [chat.bot(conv, "", chat.error("فایلی دریافت نشد."))])
-    return _reply(conv, flows.handle_upload(request.user, conv, f))
+    since = _last_id(conv)
+    return _reply(conv, flows.handle_upload(request.user, conv, f), since)
 
 
 @login_required
@@ -84,7 +98,8 @@ def approve(request):
         return HttpResponseBadRequest()
     decision = "confirm" if body.get("decision") == "confirm" else "cancel"
     conv = chat.conversation_for(request.user)
-    return _reply(conv, approvals.decide(request.user, action_id, decision))
+    since = _last_id(conv)
+    return _reply(conv, approvals.decide(request.user, action_id, decision), since)
 
 
 @login_required
@@ -101,7 +116,7 @@ def reset(request):
 @require_GET
 def stream(request):
     try:
-        job = Job.objects.select_related("message").get(
+        job = Job.objects.select_related("message", "pending_action").get(
             id=int(request.GET.get("job", "")), pending_action__conversation__user=request.user)
     except (ValueError, Job.DoesNotExist):
         return HttpResponseBadRequest()
@@ -116,6 +131,12 @@ def stream(request):
                 return
             done = any(b.get("type") == "progress" and b.get("done") for b in msg.ui)
             payload = json.dumps(chat.render(msg) | {"message_id": msg.id, "done": done}, ensure_ascii=False)
+            if done:
+                # Messages the job posted (result, errors) and the refreshed approval card.
+                action_msg = job.pending_action.message_id
+                for m in Message.objects.filter(conversation_id=msg.conversation_id).filter(
+                        Q(id__gt=message_id) | Q(id=action_msg)):
+                    yield f"event: message\ndata: {json.dumps(chat.render(m), ensure_ascii=False)}\n\n"
             if payload != last:
                 last = payload
                 yield f"event: progress\ndata: {payload}\n\n"

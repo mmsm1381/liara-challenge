@@ -429,6 +429,8 @@ def run_deploy(action, client, progress):
     site.deployed_at = timezone.now()
     site.baseline = _baseline(client, site, verify)
     site.save(update_fields=["status", "deployed_at", "baseline"])
+    # The uploaded source is no longer needed once the release is live.
+    Path(a["upload_path"]).unlink(missing_ok=True)
     services = "، ".join(created[1:]) or "بدون سرویس اضافه"
     add_note(site, SiteNote.Kind.DEPLOY,
              f"دیپلوی {platform} با پلن {a['app_plan']} ({services}). هزینه‌ی تخمینی: {a.get('total_text', '')}. نسخه {release_id}.")

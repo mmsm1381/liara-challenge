@@ -88,6 +88,12 @@
       if (!id || streams[id]) return;
       var es = new EventSource('/chat/stream?job=' + encodeURIComponent(id));
       streams[id] = es;
+      es.addEventListener('message', function (ev) {
+        var data;
+        try { data = JSON.parse(ev.data); } catch (e) { return; }
+        upsert(data);
+        scrollDown();
+      });
       es.addEventListener('progress', function (ev) {
         var data;
         try { data = JSON.parse(ev.data); } catch (e) { return; }

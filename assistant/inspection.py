@@ -216,7 +216,7 @@ def _analyze_django(archive, files, expanded, digest, archive_size, limits):
         warnings.append("A single Django manage.py entry point was not found.")
     if not declared:
         warnings.append("Django was not explicitly declared in the supported dependency manifests.")
-    sensitive_files = sorted(name for name in files if PurePosixPath(name).name in {".env", "id_rsa", "id_ed25519"} or name.endswith((".pem", ".key")) or PurePosixPath(name).name.startswith(".env."))
+    sensitive_files = sorted(name for name in files if PurePosixPath(name).name in {".env", "id_rsa", "id_ed25519"} or name.endswith((".pem", ".key")) or (PurePosixPath(name).name.startswith(".env.") and PurePosixPath(name).name not in {".env.example", ".env.sample", ".env.template"}))
     if sensitive_files:
         warnings.append("Possible secret files are present. Remove real credentials before any deployment; their contents were not analyzed.")
     supported = bool(manage and declared and settings_path)
@@ -461,7 +461,7 @@ def _analyze(archive, files, expanded, digest, archive_size, limits):
         project["unsupported_reason_fa"] = UNSUPPORTED_FA
     sensitive = result["facts"]["possible_secret_file_paths"]
     if sensitive:
-        project["warnings_fa"].append("فایل‌های حساس (مثل .env) در ZIP هست؛ قبل از استقرار آن‌ها را حذف کنید و مقادیر را به‌عنوان متغیر محیطی تنظیم کنید.")
+        project["warnings_fa"].append("در ZIP فایل حساس (مثل .env) بود؛ آن را روی لیارا آپلود نمی‌کنم و مقادیر لازم را به‌صورت متغیر محیطی تنظیم می‌کنم.")
     result["project"] = project
     return result
 

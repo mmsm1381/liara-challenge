@@ -5,16 +5,19 @@ three product screens. This file tracks how we build it and what is done.
 
 ## Starting point
 
-The repository started empty. The previous agent's `liara-compress.zip` and
-`liara_deploy.py` were not available, so the modules the plan says to reuse
-(`inspection`, `model`, `liara` + `redact`, `diagnostics`, the demo app, the
-test-ZIP builder, `probe_liara`) are rewritten here to the same contract.
+Started from an empty repository plus the previous agent's `liara-compress.zip`.
+Reused from it: `inspection.py` (extended for Node.js and service detection),
+the Django + PostgreSQL demo app, `create_test_projects.py` and the safety
+cases (`docs/safety-cases.md`). The LLM transport and `redact()` were ported
+into `llm.py` / `redact.py`. Everything else from the zip (form pages, fixture
+executor, host bindings, plan contracts) was left out as the plan says.
+`liara_deploy.py` was not provided; the deploy job follows the CLI's
+`deploy.ts` instead.
 
 Liara endpoints come from the public OpenAPI specs (`liara-cloud/openapi`:
-`paas.yaml`, `dbaas.yaml`, `object-storage.yaml`) and the CLI
-(`liara-cloud/cli` `src/commands/deploy.ts`). The build container cannot
-reach `api.liara.ir`, so nothing has been verified live yet; see
-`API_NOTES.md`.
+`paas.yaml`, `dbaas.yaml`, `object-storage.yaml`) and the CLI. The build
+container cannot reach `api.liara.ir`, so nothing has been verified live yet;
+see `API_NOTES.md`.
 
 ## Layout
 
@@ -47,13 +50,15 @@ tests/
 
 | # | Milestone | Status |
 |---|-----------|--------|
-| M0 | Clean base: Django + Postgres + Redis + worker in Docker Compose, empty chat page | in progress |
-| M1 | `liara_client.py`, `probe_liara`, `API_NOTES.md` | spec-only; live probe needs a token |
-| M2 | Chat shell + Phase 1 (connect account) | todo |
-| M3 | Inspection + recommendation up to the approval card | todo |
-| M4 | Deploy job with progress and verification | todo |
-| M5 | Returning user, diagnosis and fixes | todo |
-| M6 | Polish, README, demo script | todo |
+| M0 | Clean base: Django + Postgres + Redis + worker in Docker Compose, chat page | done locally; not yet deployed on Liara |
+| M1 | `liara_client.py`, `probe_liara`, `API_NOTES.md` | done from spec; **live probe still owed** |
+| M2 | Chat shell + Phase 1 (connect account) | done, tested against the fake client |
+| M3 | Inspection + recommendation up to the approval card | done; prices come from `list_plans()` (endpoint unverified) |
+| M4 | Deploy job with progress (SSE) and verification | done against the fake client |
+| M5 | Returning user, diagnosis and fixes (rollback, plan change, env var) | done against the fake client; LLM path tested with a mocked model |
+| M6 | README, screenshots | README + screenshots from the fake client; demo video owed |
+
+Test suite: `python -m pytest` (flows, approval gate, inspection, client, LLM loop and prompt-injection cases).
 
 ## Who builds what
 
@@ -61,9 +66,9 @@ Planning, the data model, the approval gate, the orchestrator and the deploy
 job are done by the main agent. Well-specified, self-contained pieces go to
 cheaper models:
 
-- **Sonnet:** `inspection.py`, `liara_client.py` from the spec, chat UI
-  (templates/CSS/JS), `diagnostics.py`.
-- **Haiku:** demo Django app, `create_test_projects.py`, Docker files.
+- **Sonnet:** `liara_client.py` (+ fake client, `probe_liara`, `API_NOTES.md`),
+  inspection extension, chat UI (templates/CSS/JS), LLM-path tests.
+- **Haiku:** Docker/Compose files, demo-app `liara.json`, README.
 
 ## Live checks still owed (need a real Liara account)
 
