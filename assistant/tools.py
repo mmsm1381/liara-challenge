@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from . import approvals
 from .diagnostics import analyze, missing_evidence
-from .jobs import price_delta_text
+from .jobs import GENERATED_SECRETS, HOST_VARS, price_delta_text
 from .liara_client import LiaraError, check_url, make_client
 from .memory import site_record
 from .metrics import site_usage
@@ -236,7 +236,7 @@ def propose_plan_change(ctx, app, plan_id=None, direction=None):
     return {"proposed": True, "action_id": action.id}
 
 
-AUTO_ENV = {"SECRET_KEY", "DJANGO_SECRET_KEY", "ALLOWED_HOSTS", "DJANGO_ALLOWED_HOSTS"}
+AUTO_ENV = GENERATED_SECRETS | HOST_VARS
 
 
 def propose_env_change(ctx, app, name):

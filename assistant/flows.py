@@ -14,13 +14,13 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
-from . import approvals, chat, orchestrator, sizing
+from . import ai_detect, approvals, chat, orchestrator, sizing
 from .inspection import InspectionError, inspect_zip
 from .liara_client import LiaraError, client_for_token, make_client
 from .memory import age_fa, import_projects
 from .models import LiaraConnection, Site
 
-PLATFORM_FA = {"django": "Django", "node": "Node.js", "static": "سایت استاتیک", "next": "Next.js", "docker": "Docker"}
+PLATFORM_FA = ai_detect.PLATFORM_FA
 SERVICE_FA = {"postgresql": "دیتابیس PostgreSQL", "mysql": "دیتابیس MySQL", "mongodb": "دیتابیس MongoDB",
               "redis": "Redis", "bucket": "فضای ذخیره‌سازی فایل"}
 
@@ -142,6 +142,7 @@ def connect_key(user, conv, key):
 
 VISITOR_BUTTONS = chat.buttons(("کمتر از ۱۰۰", "lt100"), ("۱۰۰ تا ۱۰۰۰", "100-1000"),
                                ("بیشتر از ۱۰۰۰", "gt1000"), ("نمی‌دانم", "unknown"))
+CONFIRM_DETECT_BUTTONS = chat.buttons(("درسته، ادامه بده", "detect_ok"), ("نه، اشتباه است", "detect_wrong"))
 PURPOSE_BUTTONS = chat.buttons(("کسب‌وکار واقعی", "business"), ("تست یا شخصی", "personal"))
 
 
@@ -175,12 +176,25 @@ def handle_upload(user, conv, upload):
         return [chat.bot(conv, "", chat.error(f"این فایل را نمی‌توانم بپذیرم: {_inspection_fa(exc.code)}",
                                               "یک zip سالم از پوشه‌ی پروژه بساز و دوباره بفرست."))]
     project = report["project"]
-    if not project["supported"]:
+    if project["platform"] is None:
+        # The rules don't know this kind of project: ask the model, then let the user confirm.
+        if not orchestrator._within_daily_cap(user):
+            path.unlink(missing_ok=True)
+            return [chat.bot(conv, "", chat.error("سقف استفاده‌ی امروز از هوش مصنوعی پر شده.", "فردا دوباره امتحان کن."))]
+        try:
+            project = ai_detect.detect(path)
+        except ai_detect.DetectionFailed as exc:
+            path.unlink(missing_ok=True)
+            return [chat.bot(conv, "", chat.error(f"این پروژه را نشناختم: {exc.reason_fa}",
+                                                  "یک liara.json با فیلد platform در ریشه‌ی پروژه بگذار و دوباره بفرست."))]
+    elif not project["supported"]:
+        # A known platform with a concrete problem (e.g. no start script): the rule's reason is precise.
         path.unlink(missing_ok=True)
         return [chat.bot(conv, "", chat.error(project["unsupported_reason_fa"] or "این نوع پروژه هنوز پشتیبانی نمی‌شود.",
-                                              "فعلاً Django و Node.js (با اسکریپت start) پشتیبانی می‌شوند."))]
+                                              "مشکل را درست کن و دوباره فایل zip را بفرست."))]
     items = [
-        {"title": f"پلتفرم: {PLATFORM_FA.get(project['platform'], project['platform'])}", "subtitle": f"دستور اجرا: {project['start_command']}"},
+        {"title": f"پلتفرم: {PLATFORM_FA.get(project['platform'], project['platform'])}",
+         "subtitle": f"دستور اجرا: {project['start_command']}" if project.get("start_command") else "دستور اجرا را لیارا خودش تعیین می‌کند"},
         {"title": f"پورت: {project['port']}", "subtitle": "برنامه روی این پورت اجرا می‌شود"},
     ]
     for svc in project["services"]:
@@ -190,8 +204,14 @@ def handle_upload(user, conv, upload):
         blocks.append(chat.note("لازم نیست کاری بکنی: این‌ها را خودم روی لیارا می‌سازم و به برنامه‌ات وصل می‌کنم."))
     for warning in project.get("warnings_fa") or []:
         blocks.append(chat.note(warning, "warning"))
-    chat.set_state(conv, flow="deploy", step="visitors", upload_id=upload_id, project=project,
-                   source_name=Path(upload.name).stem)
+    ai = project.get("detected_by") == "ai"
+    chat.set_state(conv, flow="deploy", step="confirm_detect" if ai else "visitors", upload_id=upload_id,
+                   project=project, source_name=Path(upload.name).stem)
+    if ai:
+        summary = project.get("summary_fa") or ""
+        out = [chat.bot(conv, "این نوع پروژه را با قوانین ثابتم نمی‌شناختم، پس با هوش مصنوعی بررسی‌اش کردم. " + summary, *blocks)]
+        out.append(chat.bot(conv, "این تشخیص درست است؟", CONFIRM_DETECT_BUTTONS))
+        return out
     out = [chat.bot(conv, "پروژه را بررسی کردم.", *blocks)]
     out.append(chat.bot(conv, "روزانه حدوداً چند نفر به سایتت سر می‌زنند؟", VISITOR_BUTTONS))
     return out
@@ -259,6 +279,19 @@ def deploy_step(user, conv, text, value):
         if value == "github":
             return [chat.bot(conv, "اتصال گیت‌هاب در این نسخه هنوز آماده نیست. پوشه‌ی پروژه را zip کن و با دکمه‌ی سنجاق بفرست.")]
         return [chat.bot(conv, "فایل zip پروژه را با دکمه‌ی سنجاق کنار پیام بفرست.")]
+    if step == "confirm_detect":
+        if value == "detect_ok":
+            chat.set_state(conv, step="visitors")
+            return [chat.bot(conv, "روزانه حدوداً چند نفر به سایتت سر می‌زنند؟", VISITOR_BUTTONS)]
+        if value == "detect_wrong":
+            upload_id = conv.state.get("upload_id")
+            if upload_id:
+                (settings.UPLOAD_DIR / f"{upload_id}.zip").unlink(missing_ok=True)
+            chat.set_state(conv, flow=None, step=None, upload_id=None, project=None)
+            return [chat.bot(conv, "باشه، چیزی نمی‌سازم. اگر یک فایل liara.json با فیلد platform (مثلاً "
+                                   "{\"platform\": \"flask\"}) در ریشه‌ی پروژه بگذاری، دقیق‌تر تشخیص می‌دهم.",
+                             chat.buttons(("دوباره فایل می‌فرستم", "zip")))]
+        return [chat.bot(conv, "این تشخیص درست است؟", CONFIRM_DETECT_BUTTONS)]
     if step == "visitors":
         if value not in sizing.TIER_FOR_VISITORS:
             return [chat.bot(conv, "یکی از گزینه‌ها را انتخاب کن:", VISITOR_BUTTONS)]

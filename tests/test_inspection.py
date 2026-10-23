@@ -29,7 +29,8 @@ def test_demo_zip(fixtures):
     assert p["platform"] == "django" and p["supported"]
     assert "postgresql" in kinds(r)
     assert {"DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD", "SECRET_KEY"} <= set(p["env_vars"])
-    assert p["port"] == 8000 and p["start_command"].startswith("gunicorn ")
+    # Liara fixes the django platform port at 80 (CLI src/utils/get-port.ts).
+    assert p["port"] == 80 and p["start_command"].startswith("gunicorn ")
     assert len([s for s in p["services"] if s["kind"] == "postgresql"]) == 1
     assert r["source_supported"] is True
 

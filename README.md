@@ -138,7 +138,7 @@ Read calls are different: while a build is running, the worker keeps polling `ge
 - **Object storage env vars are guesses.** `LIARA_ENDPOINT` is hard-coded and marked UNVERIFIED in `jobs.py`. The bucket-key response is also unverified; if Liara does not return the secret, the job stops and asks the user to create the key in the console.
 - **Shipping a new version of an existing site is not supported in place.** The "نسخه‌ی جدید بفرستم" button starts the deploy flow again, which creates a new app with a random suffix.
 - **Port mismatch is advice only.** The `port_mismatch` signal tells the user which port to set and to send a new version; it does not redeploy by itself.
-- **GitHub sources are not supported.** The assistant accepts ZIP uploads only (50 MiB by default, `MAX_ZIP_BYTES`; 200 MB after packing). Only Django and Node.js projects (with a `start` script) are supported.
+- **GitHub sources are not supported.** The assistant accepts ZIP uploads only (50 MiB by default, `MAX_ZIP_BYTES`; 200 MB after packing). Django and Node.js are recognized by fixed rules; other platforms depend on AI detection (see Phase 2) and need an LLM configured.
 - **Custom domains: guidance only.** The "دامنه‌ی خودم را وصل کن" button shows steps and links to the console. It does not add domains or DNS records.
 - **Redis is not created automatically.** Provision it on Liara and set `REDIS_URL`. A worker process is also needed unless `RQ_SYNC=1` (demo only).
 - **No deletes.** The assistant never deletes apps, databases or buckets. Cleanup is a message asking the user to delete them in the console.
@@ -155,6 +155,14 @@ Chat is the only interface. The page shows the conversation with buttons, cards 
 
 **Phase 2: deploy.** Flow:
 1. The user attaches a ZIP. Inspection is static only: nothing is extracted to disk or run. The card shows the detected platform, start command, port and services (PostgreSQL, MySQL, MongoDB, Redis, file storage), with the reason for each.
+   - **Rules first, AI as fallback.** Django and Node.js are recognized by deterministic rules in `inspection.py` with no model call. When the rules find no platform, `ai_detect.py` sends the model a small, redacted slice of the ZIP (file tree, manifests such as `requirements.txt`, `composer.json` and `go.mod`, and the first lines of entry points; never `.env` files) and validates its JSON answer:
+     - the platform must be one of Liara's 14 platforms (the CLI's `AVAILABLE_PLATFORMS`);
+     - Liara's fixed ports are enforced (for example 80 for Django, Flask and Laravel);
+     - the start command is display-only and must be a plain launcher command;
+     - every service and env var name must appear verbatim in the files that were sent;
+     - a `platform` declared in `liara.json` always wins.
+
+     The chat marks the result as an AI guess and asks «این تشخیص درست است؟» ("is this right?") before continuing. File contents are treated as untrusted data.
 2. Two questions: daily visitors ("کمتر از ۱۰۰", "۱۰۰ تا ۱۰۰۰", "بیشتر از ۱۰۰۰", "نمی‌دانم") and purpose ("کسب‌وکار واقعی" or "تست یا شخصی").
 3. A recommendation built from the live plan list, with the price and a reason. The user can ask for "ارزان‌ترش کن".
 4. An approval card with cost and downtime. "قبول، همین را بساز" starts the job.
@@ -246,7 +254,8 @@ assistant/
   redact.py              strips tokens, passwords and URLs from text
   liara_client.py        the only module that talks to Liara; fake client for demos
   llm.py                 Liara AI transport (native tools or prompt_json)
-  inspection.py          static ZIP inspection and service detection
+  inspection.py          static ZIP inspection and service detection (rules)
+  ai_detect.py           AI fallback detection with strict validation
   sizing.py              turns the answers and plan list into a package and price
   diagnostics.py         deterministic signal rules
   tools.py               tool registry: read tools run, change tools propose

@@ -6,6 +6,7 @@ timeout marks the action `unknown`, after which the real state is read back
 from Liara and reported instead of claiming success.
 """
 
+import base64
 import io
 import logging
 import secrets
@@ -246,11 +247,39 @@ def _db_env(db, expected, db_kind):
     name = db.get("db_name") or ""
     scheme = {"postgresql": "postgres", "mysql": "mysql", "mongodb": "mongodb"}[db_kind]
     url = f"{scheme}://{user}:{password}@{host}:{port}/{name}"
-    values = {"DATABASE_URL": url, "DB_HOST": host, "DB_PORT": port, "DB_NAME": name, "DB_USER": user, "DB_PASSWORD": password}
+    values = {"DATABASE_URL": url, "DB_HOST": host, "DB_PORT": port, "DB_NAME": name, "DB_USER": user, "DB_PASSWORD": password,
+              # Laravel's names
+              "DB_CONNECTION": {"postgresql": "pgsql", "mysql": "mysql", "mongodb": "mongodb"}[db_kind],
+              "DB_DATABASE": name, "DB_USERNAME": user}
     if db_kind == "mongodb":
         values["MONGODB_URI"] = values["MONGO_URL"] = url
     wanted = {k: v for k, v in values.items() if k in expected}
     return wanted or {"DATABASE_URL": url}
+
+
+# Values the assistant can produce itself, by env var name.
+GENERATED_SECRETS = {"SECRET_KEY", "DJANGO_SECRET_KEY", "FLASK_SECRET_KEY", "SESSION_SECRET", "JWT_SECRET", "APP_SECRET"}
+HOST_VARS = {"ALLOWED_HOSTS", "DJANGO_ALLOWED_HOSTS"}
+URL_VARS = {"APP_URL", "SITE_URL", "BASE_URL"}
+
+
+def generated_envs(platform, app_name, expected) -> dict:
+    domain = f"{app_name}.liara.run"
+    envs = {}
+    for name in expected:
+        if name in GENERATED_SECRETS:
+            envs[name] = secrets.token_urlsafe(50)
+        elif name in HOST_VARS:
+            envs[name] = domain
+        elif name in URL_VARS:
+            envs[name] = f"https://{domain}"
+    if platform == "django":
+        envs.setdefault("SECRET_KEY", secrets.token_urlsafe(50))
+        envs.setdefault("ALLOWED_HOSTS", domain)
+    if platform == "laravel":
+        envs["APP_KEY"] = "base64:" + base64.b64encode(secrets.token_bytes(32)).decode()
+        envs.setdefault("APP_URL", f"https://{domain}")
+    return envs
 
 
 def _wait_db(client, db_id, timeout=300):
@@ -391,13 +420,7 @@ def run_deploy(action, client, progress):
         envs = {}
         if db:
             envs.update(_db_env(db, expected, a["db_kind"]))
-        if platform == "django":
-            envs["SECRET_KEY"] = secrets.token_urlsafe(50)
-            if "DJANGO_SECRET_KEY" in expected:
-                envs["DJANGO_SECRET_KEY"] = envs["SECRET_KEY"]
-            envs["ALLOWED_HOSTS"] = f"{app_name}.liara.run"
-            if "DJANGO_ALLOWED_HOSTS" in expected:
-                envs["DJANGO_ALLOWED_HOSTS"] = envs["ALLOWED_HOSTS"]
+        envs.update(generated_envs(platform, app_name, expected))
         if bucket_keys:
             envs.update({
                 "LIARA_ENDPOINT": "https://storage.iran.liara.space",  # UNVERIFIED: S3 endpoint for the default region

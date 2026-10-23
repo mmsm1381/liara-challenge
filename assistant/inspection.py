@@ -368,7 +368,7 @@ def _python_project(archive, files, result, settings_path, backends, limits):
     env = set(facts["environment_variable_names"]) | _env_example_names(archive, files, root, limits)
     return {
         "platform": "django", "supported": True, "unsupported_reason_fa": None, "root": root,
-        "start_command": f"gunicorn {wsgi}" if wsgi else None, "port": 8000, "wsgi_module": wsgi,
+        "start_command": f"gunicorn {wsgi}" if wsgi else None, "port": 80, "wsgi_module": wsgi,
         "services": services.list(), "env_vars": sorted(env), "warnings_fa": [],
     }
 
