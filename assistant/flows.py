@@ -14,7 +14,7 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
-from . import ai_detect, approvals, chat, github, orchestrator, sizing
+from . import ai_detect, approvals, chat, github, orchestrator, router, sizing
 from .inspection import InspectionError, InspectionLimits, inspect_zip
 from .liara_client import LiaraError, client_for_token, make_client
 from .memory import age_fa, import_projects
@@ -338,6 +338,82 @@ def deploy_step(user, conv, text, value):
     return None
 
 
+# ------------------------------------------------------------------ typed text at a button step
+
+CONNECT_OPTIONS = [("کلید API دارم", "have_key"), ("نمی‌دونم چطور بگیرم", "how_key")]
+SOURCE_OPTIONS = [("فایل zip آپلود می‌کنم", "zip"), ("لینک گیت‌هاب می‌دهم", "github")]
+
+
+def _options(block):
+    return [(o["label"], o["value"]) for o in block["options"]]
+
+
+def step_prompt(conv, step):
+    """(question, options) for a step that offers buttons, or None."""
+    if step == "source":
+        return "پروژه‌ات را از کجا بردارم؟", SOURCE_OPTIONS
+    if step == "confirm_detect":
+        return "این تشخیص درست است؟", _options(CONFIRM_DETECT_BUTTONS)
+    if step == "visitors":
+        return "روزانه حدوداً چند نفر به سایتت سر می‌زنند؟", _options(VISITOR_BUTTONS)
+    if step == "purpose":
+        return "این سایت برای یک کسب‌وکار واقعی است یا تست و شخصی؟", _options(PURPOSE_BUTTONS)
+    if step == "recommend":
+        opts = [("قبول، همین را بساز", "accept")]
+        if (conv.state.get("package") or {}).get("can_go_cheaper"):
+            opts.append(("ارزان‌ترش کن", "cheaper"))
+        return "این پیشنهاد را قبول داری؟", opts
+    return None
+
+
+def _reask(conv, question, options, text=""):
+    return chat.bot(conv, (text + "\n" if text else "") + question, chat.buttons(*options))
+
+
+def cancel_deploy(conv):
+    upload_id = conv.state.get("upload_id")
+    if upload_id:
+        (settings.UPLOAD_DIR / f"{upload_id}.zip").unlink(missing_ok=True)
+    chat.set_state(conv, flow=None, step=None, upload_id=None, project=None, package=None)
+    return [chat.bot(conv, "باشه، دیپلوی را متوقف کردم. چیزی ساخته نشد.",
+                     chat.buttons(("یک پروژه‌ی جدید بالا بیاور", "deploy_new"), ("سایت‌هایم چطورند؟", "sites_status")))]
+
+
+def _set_platform(conv, platform):
+    project = dict(conv.state["project"])
+    project["platform"] = platform
+    if platform in ai_detect.FIXED_PORTS:
+        project["port"] = ai_detect.FIXED_PORTS[platform]
+    project["start_command"] = None  # the old one belonged to the other platform
+    chat.set_state(conv, project=project)
+    name = PLATFORM_FA.get(platform, platform)
+    return [chat.bot(conv, f"باشه، نوع پروژه را {name} گذاشتم (پورت {project['port']}).",
+                     chat.note("بقیه‌ی موارد (سرویس‌ها و متغیرها) همان‌هایی است که در فایل‌ها پیدا شد.", "info")),
+            _reask(conv, "حالا درست است؟", _options(CONFIRM_DETECT_BUTTONS))]
+
+
+def typed_at_step(user, conv, step, text):
+    """Free text at a button step: returns (value or None, messages or None)."""
+    prompt = step_prompt(conv, step)
+    if not prompt:
+        return None, None
+    question, options = prompt
+    use_model = orchestrator._within_daily_cap(user) if router.match(step, options, text) is None else False
+    r = router.route(step, question, options, text, allow_platform=step == "confirm_detect", use_model=use_model)
+    if r["kind"] == "choose":
+        return r["value"], None
+    if r["kind"] == "answer":
+        return None, [_reask(conv, question, options, r["text"])]
+    if r["kind"] == "platform":
+        return None, _set_platform(conv, r["platform"])
+    if r["kind"] == "cancel":
+        return None, cancel_deploy(conv)
+    if r["kind"] == "other":
+        # Answer the side request, then bring the user back to where they were.
+        return None, orchestrator.answer(user, conv, text) + [_reask(conv, "برای ادامه‌ی دیپلوی: " + question, options)]
+    return None, [_reask(conv, question, options, "منظورت را متوجه نشدم؛ یکی از گزینه‌ها را انتخاب کن یا واضح‌تر بنویس.")]
+
+
 # ------------------------------------------------------------------ dispatcher
 
 def handle_text(user, conv, text, value=None):
@@ -353,6 +429,16 @@ def handle_text(user, conv, text, value=None):
     state = conv.state or {}
 
     if not _connected(user):
+        if not value:
+            r = router.route("connect", "کلید API لیارا داری؟", CONNECT_OPTIONS, text,
+                             use_model=router.match("connect", CONNECT_OPTIONS, text) is None and orchestrator._within_daily_cap(user))
+            if r["kind"] == "choose":
+                value = r["value"]
+            elif r["kind"] == "answer":
+                return [_reask(conv, "کلید API لیارا داری؟", CONNECT_OPTIONS, r["text"])]
+            elif r["kind"] in ("other", "cancel"):
+                return [_reask(conv, "کلید API لیارا داری؟", CONNECT_OPTIONS,
+                               "برای هر کاری اول باید حساب لیارا را وصل کنیم.")]
         if value == "how_key":
             chat.set_state(conv, awaiting_key=True)
             return [chat.bot(conv, "ساختن کلید فقط یک دقیقه طول می‌کشد:", KEY_STEPS, KEY_LINK,
@@ -362,8 +448,19 @@ def handle_text(user, conv, text, value=None):
                          chat.note("کلید رمزنگاری‌شده ذخیره می‌شود و هیچ‌وقت برای مدل هوش مصنوعی فرستاده نمی‌شود.", "info"))]
 
     # A GitHub link starts the GitHub path whether or not the button was pressed first.
-    if not value and (github.parse_url(text) or (state.get("flow") == "deploy" and state.get("step") == "github_url")):
+    waiting_for_link = state.get("flow") == "deploy" and state.get("step") == "github_url"
+    if not value and (github.parse_url(text) or (waiting_for_link and ("github.com" in text.lower() or re.match(r"(?i)\s*(https?://|www\.)", text)))):
         return handle_github(user, conv, text)
+    if not value and waiting_for_link:
+        # Not a link: maybe they changed their mind ("send a zip instead") or asked something.
+        value, out = typed_at_step(user, conv, "source", text)
+        if out is not None:
+            return out
+        chat.set_state(conv, step="source")
+    if state.get("flow") == "deploy" and not value and step_prompt(conv, state.get("step")):
+        value, out = typed_at_step(user, conv, state.get("step"), text)
+        if out is not None:
+            return out
     if value == "retry_recommend" or (state.get("flow") == "deploy" and value):
         out = deploy_step(user, conv, text, value)
         if out is not None:
