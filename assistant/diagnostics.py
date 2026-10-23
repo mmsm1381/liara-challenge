@@ -108,7 +108,7 @@ def analyze(evidence: dict) -> list[dict]:
     if listen and release_port and int(listen) != int(release_port):
         signals.append(Signal(
             "port_mismatch", f"برنامه روی پورت {listen} گوش می‌دهد ولی لیارا انتظار پورت {release_port} را دارد.",
-            f"با پورت {listen} دوباره منتشر می‌کنم.", "propose_deploy", {"port": int(listen)},
+            f"در liara.json یا تنظیمات برنامه پورت را {listen} کن و نسخه‌ی جدید بفرست.", "", {},
             [f"listen {listen} / release {release_port}"], "high"))
 
     crash_lines = _hits(logs, CRASH)

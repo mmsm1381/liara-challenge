@@ -106,6 +106,10 @@ def _jwt_exp(token):
         return None
 
 
+def looks_like_key(text):
+    return " " not in text and len(text) >= 20 and re.fullmatch(r"[A-Za-z0-9._\-]+", text) is not None
+
+
 def connect_key(user, conv, key):
     """The key never enters Message; only the encrypted token is stored, and only on success."""
     key = (key or "").strip()
@@ -282,6 +286,9 @@ def handle_text(user, conv, text, value=None):
     text = (text or "").strip()[:2000]
     if not text:
         return []
+    # A key pasted into the normal text box must never be stored as a Message.
+    if not _connected(user) and not value and looks_like_key(text):
+        return connect_key(user, conv, text)
     chat.user_says(conv, text)
     value = value or ""
     state = conv.state or {}

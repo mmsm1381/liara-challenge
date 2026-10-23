@@ -230,3 +230,10 @@ def test_other_users_cannot_approve(client, zips):
     post(c2, "/chat/approve", action_id=action.id, decision="confirm")
     action.refresh_from_db()
     assert action.status == "proposed"
+
+
+def test_key_pasted_as_text_is_not_stored(client):
+    client.get("/")
+    post(client, "/chat/send", text="eyJhbGciOiJIUzI1NiJ9.payload-PASTED.signature")
+    assert "PASTED" not in all_text(client.user)
+    assert LiaraConnection.objects.filter(user=client.user).exists()
