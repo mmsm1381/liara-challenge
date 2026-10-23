@@ -19,43 +19,20 @@ def fixtures(tmp_path_factory):
     return dest
 
 
-def kinds(result):
-    return {s["kind"] for s in result["project"]["services"]}
-
-
-def test_demo_zip(fixtures):
+def test_safe_archive_report_shape(fixtures):
     r = inspect_zip(fixtures / "django-postgresql-demo.zip")
-    p = r["project"]
-    assert p["platform"] == "django" and p["supported"]
-    assert "postgresql" in kinds(r)
-    assert {"DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD", "SECRET_KEY"} <= set(p["env_vars"])
-    # Liara fixes the django platform port at 80 (CLI src/utils/get-port.ts).
-    assert p["port"] == 80 and p["start_command"].startswith("gunicorn ")
-    assert len([s for s in p["services"] if s["kind"] == "postgresql"]) == 1
-    assert r["source_supported"] is True
+    assert r["schema_version"] == 2
+    assert len(r["source_sha256"]) == 64
+    assert r["archive"]["files"] > 0 and r["archive"]["expanded_bytes"] > 0
+    assert "limits" in r and "warnings_fa" in r
+    # Detecting the platform, services and env vars is the model's job, not inspection's.
+    assert "project" not in r
 
 
-def test_node_express(fixtures):
-    r = inspect_zip(fixtures / "node-express.zip")
-    p = r["project"]
-    assert p["platform"] == "node" and p["supported"]
-    assert {"postgresql", "bucket"} <= kinds(r)
-    assert p["port"] == 3000
-    assert "DATABASE_URL" in p["env_vars"]
-    assert p["root"] == "shop/"
-    assert "npm start" in p["start_command"]
-
-
-def test_node_no_start(fixtures):
-    p = inspect_zip(fixtures / "node-no-start.zip")["project"]
-    assert not p["supported"]
-    assert p["unsupported_reason_fa"] == "package.json اسکریپت start ندارد."
-
-
-def test_unsupported_project_is_safe(fixtures):
-    r = inspect_zip(fixtures / "unsupported-project.zip")
-    assert r["source_supported"] is False
-    assert r["project"]["platform"] == "node"
+def test_other_project_types_are_just_safe_archives(fixtures):
+    for name in ("node-express.zip", "node-no-start.zip", "unsupported-project.zip"):
+        r = inspect_zip(fixtures / name)
+        assert r["schema_version"] == 2 and "project" not in r, name
 
 
 def test_unsafe_path(fixtures):
@@ -71,8 +48,9 @@ def test_broken(fixtures):
 
 
 def test_code_must_not_run(fixtures):
+    # Inspecting must never execute project code (the fixture's code would fail loudly if imported/run).
     r = inspect_zip(fixtures / "code-must-not-run.zip")
-    assert r["project"]["platform"] == "django"
+    assert r["schema_version"] == 2 and r["archive"]["files"] > 0
 
 
 def test_zip_bomb_rejected(tmp_path):
@@ -105,4 +83,6 @@ def test_env_values_never_in_output(tmp_path):
     r = inspect_zip(path)
     out = json.dumps(r, ensure_ascii=False)
     assert "super-secret-value-123" not in out and "another-secret-456" not in out
-    assert {"TOKEN_X", "API_KEY"} <= set(r["project"]["env_vars"])
+    assert ".env" in r["possible_secret_file_paths"]
+    assert ".env.example" not in r["possible_secret_file_paths"]
+    assert r["warnings_fa"]

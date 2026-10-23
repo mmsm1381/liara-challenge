@@ -217,12 +217,28 @@ FLASK_REPLY = {
 
 
 @pytest.mark.django_db
-def test_rules_run_first_no_model_call(client, zips, monkeypatch):
+@pytest.mark.parametrize("name", ["django-postgresql-demo.zip", "flask-app.zip", "static-site.zip"])
+def test_every_upload_calls_the_model_exactly_once(client, zips, monkeypatch, name):
     model = Model(monkeypatch, FLASK_REPLY)
     connect(client)
-    html, _ = upload(client, zips, "django-postgresql-demo.zip")
-    assert "Django" in html and "چند نفر" in html
-    assert model.payloads == []
+    html, _ = upload(client, zips, name)
+    assert len(model.payloads) == 1
+    assert "این تشخیص درست است؟" in html
+    assert state(client)["step"] == "confirm_detect"
+
+
+@pytest.mark.django_db
+def test_blocker_is_shown_and_nothing_is_stored(client, zips, monkeypatch):
+    blocker = "package.json اسکریپت start ندارد؛ آن را اضافه کن."
+    model = Model(monkeypatch, dict(FLASK_REPLY, platform="node", blocker_fa=blocker))
+    connect(client)
+    html, _ = upload(client, zips, "node-no-start.zip")
+    assert len(model.payloads) == 1
+    assert "این پروژه را نمی‌توانم دیپلوی کنم" in html and blocker in html
+    st = state(client)
+    assert not st.get("project") and not st.get("upload_id")
+    assert not PendingAction.objects.exists()
+    assert not list(liara_client_upload_dir().glob("*.zip"))
 
 
 @pytest.mark.django_db
@@ -303,7 +319,7 @@ def test_no_llm_configured(client, zips, settings, monkeypatch):
     settings.LLM_BASE_URL = ""
     connect(client)
     html, _ = upload(client, zips, "flask-app.zip")
-    assert "این پروژه را نشناختم" in html
+    assert "این پروژه را نمی‌توانم دیپلوی کنم" in html
     assert model.payloads == []
     st = state(client)
     assert not st.get("project") and not st.get("upload_id")
@@ -321,20 +337,17 @@ def test_daily_cap(client, zips, settings, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_node_no_start_keeps_rule_error(client, zips, monkeypatch):
-    model = Model(monkeypatch, FLASK_REPLY)
-    connect(client)
-    html, _ = upload(client, zips, "node-no-start.zip")
-    assert "start" in html and "نشناختم" not in html
-    assert model.payloads == []
-
-
-@pytest.mark.django_db
 def test_garbage_model_reply_is_not_supported(client, zips, monkeypatch):
     Model(monkeypatch, "I think it is a nice project!")
     connect(client)
     html, _ = upload(client, zips, "static-site.zip")
-    assert "این پروژه را نشناختم" in html and not state(client).get("project")
+    assert "این پروژه را نمی‌توانم دیپلوی کنم" in html and not state(client).get("project")
+
+
+def test_validate_blocker_raises():
+    with pytest.raises(DetectionFailed) as exc:
+        ai_detect.validate(good(platform="node", blocker_fa="start ندارد"), HAYSTACK)
+    assert exc.value.reason_fa == "start ندارد"
 
 
 def test_generated_envs():

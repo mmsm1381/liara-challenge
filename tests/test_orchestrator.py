@@ -17,7 +17,7 @@ TOKEN = "good-token-SECRET-9876"
 
 
 @pytest.fixture(autouse=True)
-def fake_liara(settings, tmp_path, monkeypatch):
+def fake_liara(settings, tmp_path, monkeypatch, detection_model):  # detection_model: deploys in setup work
     settings.LIARA_FAKE = True
     settings.TOKEN_ENCRYPTION_KEY = "aGVsbG8taGVsbG8taGVsbG8taGVsbG8taGVsbG8tMTI="
     settings.RQ_SYNC = True
@@ -97,6 +97,7 @@ def deployed_site(client, zips):
     s(text="x", value="deploy_new")
     with open(zips / "django-postgresql-demo.zip", "rb") as fh:
         client.post("/chat/upload", {"file": fh})
+    s(text="x", value="detect_ok")
     s(text="x", value="100-1000")
     s(text="x", value="business")
     s(text="x", value="accept")

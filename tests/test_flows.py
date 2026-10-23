@@ -17,11 +17,11 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture(autouse=True)
-def fake_liara(settings, tmp_path, monkeypatch):
+def fake_liara(settings, tmp_path, monkeypatch, detection_model):
     settings.LIARA_FAKE = True
     settings.TOKEN_ENCRYPTION_KEY = "aGVsbG8taGVsbG8taGVsbG8taGVsbG8taGVsbG8tMTI="
     settings.RQ_SYNC = True
-    settings.LLM_BASE_URL = ""  # deterministic path
+    # Detection is answered by the mocked model; every other model request fails, so questions use the rules.
     settings.UPLOAD_DIR = tmp_path / "uploads"
     monkeypatch.setattr(liara_client, "_fake_path", lambda: tmp_path / "fake_liara.json", raising=False)
     monkeypatch.setattr(jobs, "BUILD_POLL_SECONDS", 0)
@@ -94,6 +94,9 @@ def deploy_demo(c, zips, purpose="business"):
         out = c.post("/chat/upload", {"file": fh}).json()
     html = "".join(m["html"] for m in out["messages"])
     assert "PostgreSQL" in html and "Django" in html
+    assert "این تشخیص درست است؟" in html
+    out = post(c, "/chat/send", text="درسته", value="detect_ok")
+    assert "چند نفر" in out["messages"][-1]["html"]
     post(c, "/chat/send", text="۱۰۰ تا ۱۰۰۰", value="100-1000")
     out = post(c, "/chat/send", text="کسب‌وکار واقعی", value=purpose)
     assert "تومان" in out["messages"][-1]["html"]
@@ -140,6 +143,7 @@ def test_cancel_and_expiry(client, zips):
     post(client, "/chat/send", text="یک پروژه‌ی جدید بالا بیاور", value="deploy_new")
     with open(zips / "django-postgresql-demo.zip", "rb") as fh:
         client.post("/chat/upload", {"file": fh})
+    post(client, "/chat/send", text="x", value="detect_ok")
     post(client, "/chat/send", text="x", value="lt100")
     post(client, "/chat/send", text="x", value="personal")
     post(client, "/chat/send", text="x", value="accept")
@@ -151,13 +155,23 @@ def test_cancel_and_expiry(client, zips):
     assert not hasattr(second, "job") or second.job is None
 
 
-def test_rejects_unsafe_and_unsupported_zips(client, zips):
+def test_rejects_unsafe_and_unsupported_zips(client, zips, detection_model):
     connect(client)
-    for name, needle in (("unsafe-path.zip", "نمی‌توانم بپذیرم"), ("broken.zip", "نمی‌توانم بپذیرم"),
-                         ("node-no-start.zip", "start")):
+    for name in ("unsafe-path.zip", "broken.zip"):
         with open(zips / name, "rb") as fh:
             out = client.post("/chat/upload", {"file": fh}).json()
-        assert needle in out["messages"][-1]["html"], name
+        assert "نمی‌توانم بپذیرم" in out["messages"][-1]["html"], name
+    assert detection_model.detection_payloads == []  # unsafe archives never reach the model
+
+    blocker = "package.json اسکریپت start ندارد؛ آن را اضافه کن."
+    detection_model.reply = {"platform": "node", "confidence": "high", "root": "", "start_command": None,
+                             "port": 3000, "services": [], "env_vars": [], "blocker_fa": blocker,
+                             "summary_fa": "x"}
+    with open(zips / "node-no-start.zip", "rb") as fh:
+        out = client.post("/chat/upload", {"file": fh}).json()
+    html = out["messages"][-1]["html"]
+    assert "این پروژه را نمی‌توانم دیپلوی کنم" in html and blocker in html
+    assert len(detection_model.detection_payloads) == 1
 
 
 def test_cheaper_hidden_at_smallest_tier(client, zips):
@@ -165,6 +179,7 @@ def test_cheaper_hidden_at_smallest_tier(client, zips):
     post(client, "/chat/send", text="x", value="deploy_new")
     with open(zips / "django-postgresql-demo.zip", "rb") as fh:
         client.post("/chat/upload", {"file": fh})
+    post(client, "/chat/send", text="x", value="detect_ok")
     post(client, "/chat/send", text="x", value="lt100")
     out = post(client, "/chat/send", text="x", value="personal")
     assert "ارزان‌ترش کن" not in out["messages"][-1]["html"]
