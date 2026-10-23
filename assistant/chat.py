@@ -50,4 +50,10 @@ def set_state(conv, **changes):
 
 
 def composer_for(conv) -> dict:
-    return KEY_COMPOSER if (conv.state or {}).get("awaiting_key") else TEXT_COMPOSER
+    state = conv.state or {}
+    secret = state.get("awaiting_secret")
+    if secret:
+        name = secret["name"]
+        return {"mode": "password", "placeholder": f"مقدار {name}", "label": name, "attach": False,
+                "endpoint": "/chat/secret"}
+    return KEY_COMPOSER if state.get("awaiting_key") else TEXT_COMPOSER

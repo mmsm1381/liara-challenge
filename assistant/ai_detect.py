@@ -124,6 +124,18 @@ def build_context(zip_path) -> tuple[str, str]:
     return context, context
 
 
+def has_default(name, haystack):
+    """True when the code visibly reads `name` with a fallback value, so it may be left unset."""
+    n = re.escape(name)
+    patterns = (
+        rf"""(?:getenv|environ\.get|env\.get|config)\(\s*["']{n}["']\s*,""",  # Python os.getenv("X", d)
+        rf"""\benv\(\s*["']{n}["']\s*,""",                                     # Laravel env('X', d)
+        rf"process\.env\.{n}\s*(?:\|\||\?\?)",                                   # Node process.env.X || d
+        rf"""process\.env\[["']{n}["']\]\s*(?:\|\||\?\?)""",
+    )
+    return any(re.search(p, haystack) for p in patterns)
+
+
 def _clean_text(value, limit):
     if not isinstance(value, str):
         return ""
@@ -202,6 +214,7 @@ def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
         and name != "PORT"
     })[:40]
 
+    optional = sorted(n for n in env_vars if has_default(n, haystack))
     summary = _clean_text(raw.get("summary_fa"), 300)
     if confidence == "medium":
         warnings.append("این تشخیص قطعی نیست؛ قبل از ادامه بررسی‌اش کن.")
@@ -215,6 +228,7 @@ def validate(raw: dict, haystack: str, declared: str | None = None) -> dict:
         "wsgi_module": None,
         "services": services,
         "env_vars": env_vars,
+        "optional_env": optional,
         "warnings_fa": warnings,
         "detected_by": "ai",
         "confidence": confidence,

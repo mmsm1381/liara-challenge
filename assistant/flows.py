@@ -14,7 +14,7 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 
-from . import ai_detect, approvals, chat, github, orchestrator, router, sizing
+from . import ai_detect, approvals, chat, github, held, jobs, orchestrator, router, sizing
 from .inspection import InspectionError, InspectionLimits, inspect_zip
 from .liara_client import LiaraError, client_for_token, make_client
 from .memory import age_fa, import_projects
@@ -272,6 +272,85 @@ def _recommend(user, conv, tier=None):
     return [chat.bot(conv, "", sizing.recommendation_block(pkg), chat.buttons(*opts))]
 
 
+FA_NUM = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+SECRET_NOTE = chat.note("مقدار رمزنگاری‌شده فقط تا اجرای کار نگه داشته و بعد پاک می‌شود؛ در گفتگو نمایش داده "
+                        "نمی‌شود و برای هوش مصنوعی فرستاده نمی‌شود.", "info")
+
+
+def _needed_env(conv):
+    """Env var names only the user can provide: not filled by the job, no default in the code."""
+    project, pkg = conv.state["project"], conv.state["package"]
+    auto = jobs.auto_env_names(project["platform"], pkg["db_kind"], pkg["bucket"])
+    optional = set(project.get("optional_env") or [])
+    return [n for n in project.get("env_vars") or [] if n not in auto and n not in optional and n != "PORT"]
+
+
+def _start_secrets(user, conv):
+    needed = _needed_env(conv)
+    held.discard(conv=conv)
+    if not needed:
+        return _approval(user, conv)
+    chat.set_state(conv, step="secrets", secrets_queue=needed, secrets_total=len(needed), secrets_later=[])
+    intro = chat.bot(conv, "این برنامه به چند مقدار نیاز دارد که خودم نمی‌توانم بسازم (مثلاً کلید سرویس‌های دیگر): "
+                           + "، ".join(needed))
+    return [intro] + _ask_next_secret(user, conv)
+
+
+def _ask_next_secret(user, conv):
+    queue = list(conv.state.get("secrets_queue") or [])
+    if not queue:
+        chat.set_state(conv, awaiting_secret=None)
+        return _approval(user, conv)
+    name = queue[0]
+    total = conv.state.get("secrets_total") or len(queue)
+    index = total - len(queue) + 1
+    chat.set_state(conv, awaiting_secret={"name": name, "purpose": "deploy"})
+    return [chat.bot(conv, f"({index} از {total})".translate(FA_NUM) + f" مقدار «{name}» را در کادر پایین وارد کن.",
+                     SECRET_NOTE,
+                     chat.buttons(("بعداً در کنسول تنظیم می‌کنم", "secret_later"), ("اختیاری است، رد شو", "secret_skip"),
+                                  ("لغو دیپلوی", "cancel_deploy")))]
+
+
+def _secret_answered(user, conv, how):
+    """Move past the current deploy secret: how is 'set', 'later' or 'skip'."""
+    queue = list(conv.state.get("secrets_queue") or [])
+    name = queue.pop(0) if queue else None
+    later = list(conv.state.get("secrets_later") or [])
+    if how == "later" and name:
+        later.append(name)
+    chat.set_state(conv, secrets_queue=queue, secrets_later=later, awaiting_secret=None)
+    return _ask_next_secret(user, conv)
+
+
+def submit_secret(user, conv, value):
+    """A value typed in the password box for the variable we asked about. Never stored in a Message."""
+    pending = (conv.state or {}).get("awaiting_secret")
+    if not pending:
+        return [chat.bot(conv, "", chat.error("الان منتظر مقداری نبودم.", "دوباره از اول بپرس."))]
+    value = (value or "").strip()
+    if not value or len(value) > 4096 or "\n" in value:
+        return [chat.bot(conv, "", chat.error("این مقدار معتبر نیست.", "مقدار را در یک خط وارد کن."))]
+    name = pending["name"]
+    held.hold(conv, name, value)
+    chat.user_says(conv, f"🔒 مقدار {name} وارد شد")
+    if pending.get("purpose") == "fix":
+        chat.set_state(conv, awaiting_secret=None)
+        site = Site.objects.filter(user=user, app_name=pending.get("app")).first()
+        if site is None:
+            held.discard(conv=conv)
+            return [chat.bot(conv, "", chat.error("این سایت پیدا نشد."))]
+        action = approvals.propose(
+            conv, "env_change", {"app_name": site.app_name, "name": name, "value": "__held__"},
+            [f"متغیر {name} روی {site.app_name} با مقداری که وارد کردی تنظیم می‌شود",
+             "برنامه یک بار ری‌استارت می‌شود و بعد بررسی‌اش می‌کنم"],
+            site=site, cost_text="بدون هزینه‌ی اضافه", downtime_text="حدود ۳۰ ثانیه", defer=True)
+        held.attach(conv, action, [name])
+        msg = chat.bot(conv, "مقدار را گرفتم. برای اعمالش تأیید کن:")
+        approvals.attach(action, msg)
+        return [msg]
+    return _secret_answered(user, conv, "set")
+
+
 def _approval(user, conv):
     state = conv.state
     pkg, project = state["package"], state["project"]
@@ -291,9 +370,18 @@ def _approval(user, conv):
     if pkg["bucket"]:
         lines.append("فضای ذخیره‌سازی فایل")
     lines.append("اتصال این سرویس‌ها به برنامه با متغیرهای محیطی")
+    user_env = sorted(held.pending_names(conv))
+    if user_env:
+        args["user_env"] = user_env  # names only; values stay encrypted in HeldSecret
+        lines.append(f"{len(user_env)} متغیر که خودت وارد کردی: ".translate(FA_NUM) + "، ".join(user_env))
+    later = conv.state.get("secrets_later") or []
+    if later:
+        lines.append("بعداً خودت در کنسول تنظیم می‌کنی: " + "، ".join(later))
     lines.append(f"آپلود کد، بیلد و انتشار روی https://{app_name}.liara.run")
-    chat.set_state(conv, flow=None, step=None)
-    approvals.propose(conv, "deploy", args, lines, cost_text=pkg["total_text"], downtime_text="ندارد (برنامه‌ی جدید)")
+    chat.set_state(conv, flow=None, step=None, secrets_queue=None, secrets_total=None, secrets_later=None,
+                   awaiting_secret=None)
+    action = approvals.propose(conv, "deploy", args, lines, cost_text=pkg["total_text"], downtime_text="ندارد (برنامه‌ی جدید)")
+    held.attach(conv, action)
     return list(conv.messages.order_by("-id")[:1])
 
 
@@ -305,6 +393,12 @@ def deploy_step(user, conv, text, value):
             return [chat.bot(conv, "لینک مخزن عمومی گیت‌هاب را بفرست؛ مثلاً https://github.com/owner/repo "
                                    "(برای یک شاخه‌ی خاص: .../tree/branch-name).")]
         return [chat.bot(conv, "فایل zip پروژه را با دکمه‌ی سنجاق کنار پیام بفرست.")]
+    if step == "secrets":
+        if value in ("secret_later", "secret_skip"):
+            return _secret_answered(user, conv, "later" if value == "secret_later" else "skip")
+        if value == "cancel_deploy":
+            return cancel_deploy(conv)
+        return _ask_next_secret(user, conv)
     if step == "confirm_detect":
         if value == "detect_ok":
             chat.set_state(conv, step="visitors")
@@ -330,7 +424,7 @@ def deploy_step(user, conv, text, value):
         return _recommend(user, conv)
     if step == "recommend":
         if value == "accept":
-            return _approval(user, conv)
+            return _start_secrets(user, conv)
         if value == "cheaper":
             return _recommend(user, conv, tier=max(conv.state["package"]["tier"] - 1, 0))
         if value == "retry_recommend":
@@ -374,7 +468,9 @@ def cancel_deploy(conv):
     upload_id = conv.state.get("upload_id")
     if upload_id:
         (settings.UPLOAD_DIR / f"{upload_id}.zip").unlink(missing_ok=True)
-    chat.set_state(conv, flow=None, step=None, upload_id=None, project=None, package=None)
+    held.discard(conv=conv)
+    chat.set_state(conv, flow=None, step=None, upload_id=None, project=None, package=None, awaiting_secret=None,
+                   secrets_queue=None, secrets_total=None, secrets_later=None)
     return [chat.bot(conv, "باشه، دیپلوی را متوقف کردم. چیزی ساخته نشد.",
                      chat.buttons(("یک پروژه‌ی جدید بالا بیاور", "deploy_new"), ("سایت‌هایم چطورند؟", "sites_status")))]
 
@@ -446,6 +542,16 @@ def handle_text(user, conv, text, value=None):
         chat.set_state(conv, awaiting_key=True)
         return [chat.bot(conv, "کلید API لیارا را در کادر پایین بچسبان.",
                          chat.note("کلید رمزنگاری‌شده ذخیره می‌شود و هیچ‌وقت برای مدل هوش مصنوعی فرستاده نمی‌شود.", "info"))]
+
+    pending_secret = state.get("awaiting_secret") or {}
+    if pending_secret.get("purpose") == "fix":
+        chat.set_state(conv, awaiting_secret=None)
+        held.discard(conv=conv)
+        if value == "secret_later":
+            app = pending_secret.get("app", "")
+            return [chat.bot(conv, f"باشه. هر وقت خواستی «{pending_secret['name']}» را در کنسول لیارا تنظیم کن.",
+                             {"type": "link", "href": f"https://console.liara.ir/apps/{app}/envs",
+                              "label": f"https://console.liara.ir/apps/{app}/envs"})]
 
     # A GitHub link starts the GitHub path whether or not the button was pressed first.
     waiting_for_link = state.get("flow") == "deploy" and state.get("step") == "github_url"

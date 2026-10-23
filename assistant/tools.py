@@ -245,8 +245,16 @@ def propose_env_change(ctx, app, name):
     if not isinstance(name, str) or not name.isupper() or len(name) > 100:
         raise ToolError("invalid env var name")
     if name not in AUTO_ENV:
-        return {"proposed": False, "reason": "value must be set by the user in the Liara console",
-                "console_url": f"https://console.liara.ir/apps/{site.app_name}/envs"}
+        # Only the user has this value (e.g. a third-party API key): ask for it in the
+        # password box. The value never reaches the model; the approval comes after.
+        from .chat import buttons, note, set_state
+
+        set_state(ctx.conv, awaiting_secret={"name": name, "purpose": "fix", "app": site.app_name})
+        ctx.blocks.append(note(f"مقدار «{name}» را در کادر پایین وارد کن تا روی {site.app_name} تنظیمش کنم. مقدار "
+                               "رمزنگاری‌شده فقط تا اجرای کار نگه داشته و بعد پاک می‌شود و برای هوش مصنوعی فرستاده نمی‌شود.", "info"))
+        ctx.blocks.append(buttons(("بعداً در کنسول تنظیم می‌کنم", "secret_later")))
+        return {"proposed": False, "asked_user_for_value": True,
+                "note": "the user will type the value in a secure box; do not ask them to paste it in chat"}
     value = "__generate__" if "SECRET" in name else f"{site.app_name}.liara.run"
     action = approvals.propose(
         ctx.conv, "env_change", {"app_name": site.app_name, "name": name, "value": value},

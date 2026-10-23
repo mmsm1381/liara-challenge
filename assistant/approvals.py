@@ -14,7 +14,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from . import chat
+from . import chat, held
 from .models import Job, Message, PendingAction
 
 
@@ -70,11 +70,13 @@ def _refresh_card(action):
 
 
 def expire_stale(conv):
+    held.purge_expired()
     for action in PendingAction.objects.filter(
         conversation=conv, status=PendingAction.Status.PROPOSED, expires_at__lte=timezone.now()
     ):
         action.status = PendingAction.Status.EXPIRED
         action.save(update_fields=["status"])
+        held.discard(action=action)
         _refresh_card(action)
 
 
@@ -97,12 +99,14 @@ def decide(user, action_id, decision) -> list[Message]:
         if action.is_expired:
             action.status = PendingAction.Status.EXPIRED
             action.save(update_fields=["status"])
+            held.discard(action=action)
             out.append(_refresh_card(action))
             out.append(chat.bot(conv, "این تأیید بیش از ۱۵ دقیقه پیش ساخته شده و منقضی شد. اگر هنوز لازم است، دوباره بخواه تا تازه بررسی کنم."))
             return [m for m in out if m]
         if decision != "confirm":
             action.status = PendingAction.Status.REJECTED
             action.save(update_fields=["status"])
+            held.discard(action=action)
             out.append(_refresh_card(action))
             if action.tool == "deploy":
                 out.append(chat.bot(conv, "لغو شد. چیزی ساخته نشد و هزینه‌ای هم کسر نشد."))

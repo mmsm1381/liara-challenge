@@ -7,6 +7,7 @@ urlpatterns = [
     path("", views.chat_page, name="chat"),
     path("chat/send", views.send, name="chat-send"),
     path("chat/key", views.submit_key, name="chat-key"),
+    path("chat/secret", views.submit_secret, name="chat-secret"),
     path("chat/upload", views.upload, name="chat-upload"),
     path("chat/approve", views.approve, name="chat-approve"),
     path("chat/reset", views.reset, name="chat-reset"),

@@ -184,3 +184,18 @@ class LLMUsage(models.Model):
 
     class Meta:
         unique_together = [("user", "day")]
+
+
+class HeldSecret(models.Model):
+    """A value the user typed for an env var (e.g. a third-party API key).
+
+    Held encrypted only until the approved job writes it to Liara, then deleted:
+    on success, failure, rejection, cancel or expiry. Never shown, never in a
+    Message, never sent to the LLM, never in the audit log (names only)."""
+
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="held_secrets")
+    action = models.ForeignKey(PendingAction, null=True, blank=True, on_delete=models.CASCADE, related_name="held_secrets")
+    name = models.CharField(max_length=100)
+    encrypted_value = models.TextField()
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)

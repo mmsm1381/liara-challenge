@@ -22,6 +22,7 @@ from django.utils import timezone
 from . import chat
 from .approvals import claim
 from .liara_client import LiaraError, check_url, make_client
+from . import held
 from .memory import add_note
 from .metrics import site_usage
 from .models import AuditLog, Job, PendingAction, Release, Site, SiteNote
@@ -134,6 +135,14 @@ def change(action, tool, fn, *args, **kwargs):
 
 
 def run_action(action_id):
+    try:
+        _run_action(action_id)
+    finally:
+        # Typed values never outlive the job, whatever happened.
+        held.HeldSecret.objects.filter(action_id=action_id).delete()
+
+
+def _run_action(action_id):
     action = claim(action_id)
     if action is None:
         log.info("action %s already claimed or changed; skipping", action_id)
@@ -261,6 +270,23 @@ def _db_env(db, expected, db_kind):
 GENERATED_SECRETS = {"SECRET_KEY", "DJANGO_SECRET_KEY", "FLASK_SECRET_KEY", "SESSION_SECRET", "JWT_SECRET", "APP_SECRET"}
 HOST_VARS = {"ALLOWED_HOSTS", "DJANGO_ALLOWED_HOSTS"}
 URL_VARS = {"APP_URL", "SITE_URL", "BASE_URL"}
+
+
+DB_VARS = {"DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD",
+           "DB_CONNECTION", "DB_DATABASE", "DB_USERNAME", "MONGODB_URI", "MONGO_URL"}
+BUCKET_VARS = {"LIARA_ENDPOINT", "LIARA_BUCKET_NAME", "LIARA_ACCESS_KEY", "LIARA_SECRET_KEY"}
+
+
+def auto_env_names(platform, db_kind, bucket) -> set:
+    """Env var names the deploy job fills by itself (keep in sync with run_deploy)."""
+    names = GENERATED_SECRETS | HOST_VARS | URL_VARS
+    if db_kind:
+        names |= DB_VARS
+    if bucket:
+        names |= BUCKET_VARS
+    if platform == "laravel":
+        names |= {"APP_KEY"}
+    return names
 
 
 def generated_envs(platform, app_name, expected) -> dict:
@@ -428,6 +454,8 @@ def run_deploy(action, client, progress):
                 "LIARA_ACCESS_KEY": bucket_keys.get("access_key", ""),
                 "LIARA_SECRET_KEY": bucket_keys.get("secret_key", ""),
             })
+        # Values the user typed (third-party keys), held encrypted until this moment.
+        envs.update(held.values_for(action))
         if envs:
             change(action, "update_envs", client.update_envs, app_name, envs)
         # Secret values are not kept anywhere after this point.
@@ -547,6 +575,10 @@ def run_env_change(action, client, progress):
     value = action.args.get("value")
     if value == "__generate__":
         value = secrets.token_urlsafe(50)
+    elif value == "__held__":
+        value = held.values_for(action).get(name)
+        if not value:
+            raise StepFailed("مقداری که وارد کرده بودی منقضی شده و پاک شده.", "دوباره بپرس و مقدار را وارد کن.")
     change(action, "update_envs", client.update_envs, action.site.app_name, {name: value})
     return _after_change_verify(action, client, progress, 1, f"متغیر {name} تنظیم شد")
 

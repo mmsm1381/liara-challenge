@@ -180,9 +180,5 @@ def _diagnose(ctx, site):
     extra = [{"type": "code", "text": "\n".join(top["evidence"][:3])}] if top["evidence"] else []
     if top["fix_tool"]:
         args = dict(top["fix_args"])
-        if top["fix_tool"] == "propose_env_change" and args.get("name") not in tools.AUTO_ENV:
-            extra.append({"type": "link", "href": f"https://console.liara.ir/apps/{site.app_name}/envs",
-                          "label": "تنظیم متغیر در کنسول لیارا"})
-        else:
-            tools.call(ctx, top["fix_tool"], {"app": site.app_name, **args})
+        tools.call(ctx, top["fix_tool"], {"app": site.app_name, **args})
     return _finish(ctx, text, extra)

@@ -77,6 +77,21 @@ def submit_key(request):
     return _reply(conv, flows.connect_key(request.user, conv, key), since)
 
 
+@sensitive_variables("body", "value")
+@sensitive_post_parameters()
+@login_required
+@require_POST
+def submit_secret(request):
+    """An env var value from the password box. Held encrypted, never in a Message or the logs."""
+    body = _body(request) or {}
+    value = str(body.get("key", ""))
+    conv = chat.conversation_for(request.user)
+    since = _last_id(conv)
+    if not value.strip():
+        return _reply(conv, [chat.bot(conv, "", chat.error("مقدار را وارد کنید."))], since)
+    return _reply(conv, flows.submit_secret(request.user, conv, value), since)
+
+
 @login_required
 @require_POST
 def upload(request):
@@ -107,6 +122,7 @@ def approve(request):
 def reset(request):
     conv = chat.conversation_for(request.user)
     conv.messages.all().delete()
+    conv.held_secrets.all().delete()
     conv.state = {}
     conv.save(update_fields=["state"])
     return _reply(conv, flows.greet(request.user, conv), reset=True)

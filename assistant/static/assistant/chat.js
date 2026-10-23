@@ -97,6 +97,8 @@
   var GITHUB_STAGES = [[0, 'دارم مخزن را از گیت\u200cهاب دریافت می\u200cکنم']].concat(SEND_STAGES.slice(1));
   var UPLOAD_STAGES = [[0, 'در حال بررسی فایل...'], [3000, 'دارم نوع پروژه را تشخیص می\u200cدهم']];
   var KEY_STAGES = [[0, 'دارم کلید را بررسی می\u200cکنم']];
+  var SECRET_STAGES = [[0, 'دارم مقدار را امن نگه می‌دارم']];
+  var secretEndpoint = '/chat/key';
   var APPROVE_STAGES = [[0, 'دارم درخواست را اعمال می\u200cکنم']];
   var RESET_STAGES = [[0, 'دارم گفتگو را بازنشانی می\u200cکنم']];
 
@@ -120,6 +122,7 @@
   function applyComposer(c) {
     if (!c) return;
     mode = c.mode === 'password' ? 'password' : 'text';
+    secretEndpoint = c.endpoint === '/chat/secret' ? '/chat/secret' : '/chat/key';
     input.type = mode === 'password' ? 'password' : 'text';
     input.autocomplete = mode === 'password' ? 'off' : 'off';
     if (mode === 'password') {
@@ -232,7 +235,7 @@
       if (!key) { showError('کلید را وارد کنید.'); input.focus(); return; }
       input.value = '';
       showError('');
-      post('/chat/key', { key: key }, KEY_STAGES);
+      post(secretEndpoint, { key: key }, secretEndpoint === '/chat/secret' ? SECRET_STAGES : KEY_STAGES);
       key = null;
       return;
     }
