@@ -6,7 +6,8 @@ three product screens. This file tracks how we build it and what is done.
 ## Starting point
 
 Started from an empty repository plus the previous agent's `liara-compress.zip`.
-Reused from it: `inspection.py` (extended for Node.js and service detection),
+Reused from it: `inspection.py` (now the ZIP safety checks only; project
+detection moved to `ai_detect.py`),
 the Django + PostgreSQL demo app, `create_test_projects.py` and the safety
 cases (`docs/safety-cases.md`). The LLM transport and `redact()` were ported
 into `llm.py` / `redact.py`. Everything else from the zip (form pages, fixture
@@ -30,7 +31,8 @@ assistant/
   redact.py             strips tokens, passwords, URLs from text
   liara_client.py       the only module that talks to Liara (typed functions)
   llm.py                Liara AI chat-completions transport (native tools + prompt_json)
-  inspection.py         safe static ZIP inspection + service detection
+  inspection.py         ZIP safety checks (no project detection)
+  ai_detect.py          AI project detection with strict validation
   sizing.py             plan tiers -> real plan IDs, price text
   diagnostics.py        deterministic log/metric signal rules
   tools.py              tool registry; read tools run, change tools -> PendingAction
@@ -53,7 +55,7 @@ tests/
 | M0 | Clean base: Django + Postgres + Redis + worker in Docker Compose, chat page | done locally; not yet deployed on Liara |
 | M1 | `liara_client.py`, `probe_liara`, `API_NOTES.md` | done from spec; **live probe still owed** |
 | M2 | Chat shell + Phase 1 (connect account) | done, tested against the fake client |
-| M3 | Inspection + recommendation up to the approval card | done; prices come from `list_plans()` (endpoint unverified) |
+| M3 | ZIP inspection is safety-only; project detection is AI (validated, user-confirmed); recommendation up to the approval card | done; prices come from `list_plans()` (endpoint unverified) |
 | M4 | Deploy job with progress (SSE) and verification | done against the fake client |
 | M5 | Returning user, diagnosis and fixes (rollback, plan change, env var) | done against the fake client; LLM path tested with a mocked model |
 | M6 | README, screenshots | README + screenshots from the fake client; demo video owed |

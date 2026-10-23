@@ -1,6 +1,6 @@
 # Liara Assistant
 
-A chat-only assistant, written in Persian, for people who run sites on Liara. You bring your own Liara API key, and the assistant deploys a Django or Node.js project (ZIP upload) together with its database and file storage. Later, you can ask it about the sites it deployed: it answers from its saved history and from fresh read-only data. Build status and open work are tracked in `PLAN.md`.
+A chat-only assistant, written in Persian, for people who run sites on Liara. You bring your own Liara API key, and the assistant deploys a project (ZIP upload) of any Liara platform (Django, Flask, Laravel, Node.js, Next.js, static, Go, Docker, …), detected by AI and confirmed by the user, together with its database and file storage. Later, you can ask it about the sites it deployed: it answers from its saved history and from fresh read-only data. Build status and open work are tracked in `PLAN.md`.
 
 > **Status:** nothing has been verified against a live Liara account yet. Read [Limitations](#4-limitations) before relying on any Liara call.
 
@@ -46,6 +46,8 @@ A chat-only assistant, written in Persian, for people who run sites on Liara. Yo
 ```
 
 **Where the LLM fits.** The LLM only reads tool results and proposes changes through `propose_*` tools. It cannot call Liara directly and cannot execute anything. If no LLM is configured (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` not all set), the daily cap is reached, or the model fails, `orchestrator.py` answers with deterministic rules instead: a site-status check, a diagnosis from the signal rules in `diagnostics.py`, or a menu of buttons.
+
+**Upload path.** `inspection.py` only checks that the ZIP is safe to read: paths, links and special files, encryption, size and zip-bomb limits, CRC, and secret-looking files such as `.env`, which it flags. It does not decide what the project is. `ai_detect.py` does that: one LLM call on a redacted slice of the archive, then strict validation of the JSON answer (see Phase 2). Without a configured LLM, uploads are refused.
 
 **Data models** (`assistant/models.py`):
 
@@ -126,6 +128,7 @@ Read calls are different: while a build is running, the worker keeps polling `ge
 
 ## 4. Limitations
 
+- **An LLM must be configured to deploy anything.** Without `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`, uploads are refused, including in `LIARA_FAKE` demo mode. Detection quality depends on the model, and it has not been tested with a real Liara AI model. Each upload uses one LLM call from the daily cap (`LLM_DAILY_CAP`).
 - **Nothing is verified against a live Liara account.** The build container cannot reach `api.liara.ir`. `API_NOTES.md` lists the open questions, which include:
   - The base URL: the default is `https://api.iran.liara.ir` and the specs say `https://api.liara.ir`. Override with `LIARA_API_BASE`.
   - The plan list. `/v1/plans` is a guess and no spec defines it. Plan IDs, RAM/CPU and prices are unknown, and the sizing recommendation depends on them.
@@ -138,7 +141,7 @@ Read calls are different: while a build is running, the worker keeps polling `ge
 - **Object storage env vars are guesses.** `LIARA_ENDPOINT` is hard-coded and marked UNVERIFIED in `jobs.py`. The bucket-key response is also unverified; if Liara does not return the secret, the job stops and asks the user to create the key in the console.
 - **Shipping a new version of an existing site is not supported in place.** The "نسخه‌ی جدید بفرستم" button starts the deploy flow again, which creates a new app with a random suffix.
 - **Port mismatch is advice only.** The `port_mismatch` signal tells the user which port to set and to send a new version; it does not redeploy by itself.
-- **GitHub sources are not supported.** The assistant accepts ZIP uploads only (50 MiB by default, `MAX_ZIP_BYTES`; 200 MB after packing). Django and Node.js are recognized by fixed rules; other platforms depend on AI detection (see Phase 2) and need an LLM configured.
+- **GitHub sources are not supported.** The assistant accepts ZIP uploads only (50 MiB by default, `MAX_ZIP_BYTES`; 200 MB after packing). Project detection is AI-only (see Phase 2), so every upload needs an LLM configured.
 - **Custom domains: guidance only.** The "دامنه‌ی خودم را وصل کن" button shows steps and links to the console. It does not add domains or DNS records.
 - **Redis is not created automatically.** Provision it on Liara and set `REDIS_URL`. A worker process is also needed unless `RQ_SYNC=1` (demo only).
 - **No deletes.** The assistant never deletes apps, databases or buckets. Cleanup is a message asking the user to delete them in the console.
@@ -155,17 +158,19 @@ Chat is the only interface. The page shows the conversation with buttons, cards 
 
 **Phase 2: deploy.** Flow:
 1. The user attaches a ZIP. Inspection is static only: nothing is extracted to disk or run. The card shows the detected platform, start command, port and services (PostgreSQL, MySQL, MongoDB, Redis, file storage), with the reason for each.
-   - **Rules first, AI as fallback.** Django and Node.js are recognized by deterministic rules in `inspection.py` with no model call. When the rules find no platform, `ai_detect.py` sends the model a small, redacted slice of the ZIP (file tree, manifests such as `requirements.txt`, `composer.json` and `go.mod`, and the first lines of entry points; never `.env` files) and validates its JSON answer:
+   - **AI-only detection.** Every upload is classified by `ai_detect.py`. The model gets a small, redacted slice of the ZIP: the file tree, manifests such as `requirements.txt`, `composer.json` and `go.mod`, the first lines of entry points, and env var names only from `.env.example` (never `.env`). It answers with one JSON object, and the server validates every field:
      - the platform must be one of Liara's 14 platforms (the CLI's `AVAILABLE_PLATFORMS`);
      - Liara's fixed ports are enforced (for example 80 for Django, Flask and Laravel);
      - the start command is display-only and must be a plain launcher command;
      - every service and env var name must appear verbatim in the files that were sent;
-     - a `platform` declared in `liara.json` always wins.
+     - a `platform` declared in `liara.json` always wins;
+     - a `blocker_fa` answer (the project cannot run as uploaded) stops the deploy and shows that Persian reason;
+     - low confidence, or any field that fails validation, means the project is not deployed.
 
-     The chat marks the result as an AI guess and asks «این تشخیص درست است؟» ("is this right?") before continuing. File contents are treated as untrusted data.
+     Every upload is confirmed in chat with «این تشخیص درست است؟» ("is this right?") before the visitor and purpose questions. File contents are treated as untrusted data.
 2. Two questions: daily visitors ("کمتر از ۱۰۰", "۱۰۰ تا ۱۰۰۰", "بیشتر از ۱۰۰۰", "نمی‌دانم") and purpose ("کسب‌وکار واقعی" or "تست یا شخصی").
 3. A recommendation built from the live plan list, with the price and a reason. The user can ask for "ارزان‌ترش کن".
-4. An approval card with cost and downtime. "قبول، همین را بساز" starts the job.
+4. An approval card with cost and downtime. "قبول، همین را بساز" starts the job. The job wires the database env vars (including Laravel's names), generates secrets such as `SECRET_KEY` and `APP_KEY` for Laravel, and sets `ALLOWED_HOSTS` and `APP_URL`.
 5. Live progress over SSE, step by step, followed by the site URL `https://<app>.liara.run` and a note that the home page answered.
 
 Screenshots: `docs/screens/2-deploy-approval.png` (approval card) and `docs/screens/2-deploy-done.png` (finished deploy). Both were taken with the fake Liara client, so the plan names and prices in them are invented.
@@ -209,6 +214,8 @@ Open http://localhost:8000, sign up, and start the chat. Replace the placeholder
 ```bash
 LIARA_FAKE=1 docker compose up --build        # or set LIARA_FAKE=1 in .env
 ```
+
+Deploys in demo mode still need the LLM variables (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) set in `.env`, because project detection is AI-only. The same applies to the local run below. Diagnosis works without them through the rule-based fallback.
 
 To break an app for a diagnosis demo, set one of its scenarios: `missing_package`, `oom`, `missing_env` or `healthy`.
 
@@ -254,8 +261,8 @@ assistant/
   redact.py              strips tokens, passwords and URLs from text
   liara_client.py        the only module that talks to Liara; fake client for demos
   llm.py                 Liara AI transport (native tools or prompt_json)
-  inspection.py          static ZIP inspection and service detection (rules)
-  ai_detect.py           AI fallback detection with strict validation
+  inspection.py          ZIP safety checks
+  ai_detect.py           AI project detection with strict validation
   sizing.py              turns the answers and plan list into a package and price
   diagnostics.py         deterministic signal rules
   tools.py               tool registry: read tools run, change tools propose
